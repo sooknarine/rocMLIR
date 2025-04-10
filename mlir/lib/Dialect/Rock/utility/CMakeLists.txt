@@ -19,6 +19,7 @@ add_rocmlir_dialect_library(MLIRRockUtility
   MLIRSupport
   MLIRRockAnalysis
   MLIRMHAL
+  MLIRAMDGPUUtils
 )
 
 target_include_directories(obj.MLIRRockUtility PUBLIC
