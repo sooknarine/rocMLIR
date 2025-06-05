@@ -219,9 +219,9 @@ def Rock_AttentionOp
           TensorOrMemRefOf<[F32, F16, BF16]>:$out,
           Optional<TensorOrMemRefOf<[F32, F16, BF16]>>:$lse,
           UnitAttr:$qTransposed, UnitAttr:$kTransposed, UnitAttr:$vTransposed,
-          UnitAttr:$oTransposed, UnitAttr:$causal, StrAttr:$arch,
-          Rock_GemmFeaturesAttr:$features, OptionalAttr<TypeAttr>:$softmaxType,
-          OptionalAttr<I32Attr>:$numCU,
+          UnitAttr:$oTransposed, UnitAttr:$causal, I32Attr:$splitKV,
+          StrAttr:$arch, Rock_GemmFeaturesAttr:$features,
+          OptionalAttr<TypeAttr>:$softmaxType, OptionalAttr<I32Attr>:$numCU,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           I32Attr:$firstGemmIdx)>,
@@ -245,6 +245,9 @@ def Rock_AttentionOp
     If causal is enabled, we implement causal masking.
 
     LSE (log-sum-exp) is an optional output typically used for flash decoding.
+    For flash decoding, you can pass splitKV > 1, the default value is 1, which means flash decoding is disabled. 
+    Flash decoding multiplies the number of blocks by splitKV. Note that "lse" has to be non-null for splitKV > 1. 
+    However, "lse" can be non-null even if splitKV = 1.
 
     Those creating a `rock.attention` must specify the GPU architecture being targeted
     and the number of compute units (numCu) available. The parameters
@@ -565,8 +568,8 @@ def Rock_GridwiseAttentionAccelOp
           Optional<MemRefRankOf<[I32], [1]>>:$currentSeqLen,
           MemRefRankOf<[F32, F16, BF16], [3]>:$out,
           Optional<MemRefRankOf<[F32, F16, BF16], [2]>>:$lse, UnitAttr:$causal,
-          StrAttr:$arch, Rock_GemmFeaturesAttr:$features, I32Attr:$blockSize,
-          I32Attr:$gridSize, UnitAttr:$disableQBypassLDS,
+          I32Attr:$splitKV, StrAttr:$arch, Rock_GemmFeaturesAttr:$features,
+          I32Attr:$blockSize, I32Attr:$gridSize, UnitAttr:$disableQBypassLDS,
           OptionalAttr<IndexAttr>:$prePadG0M,
           OptionalAttr<IndexAttr>:$prePadG0N,
           OptionalAttr<TypeAttr>:$softmaxType,

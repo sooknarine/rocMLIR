@@ -40,7 +40,7 @@ func.func @find_first_gemm_index_change(%arg0: memref<12288xf16>, %arg1: memref<
     rock.yield
   }
     %alloc = softmax(qk) * %7 : memref<32x2048x128xf16> -> memref<32x1x128xf16>
-  } {arch = "gfx942:sramecc+:xnack-", features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16>, firstGemmIdx = 1 : i32, softmaxType = f16}
+  } {arch = "gfx942:sramecc+:xnack-", features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16>, firstGemmIdx = 1 : i32, softmaxType = f16, splitKV = 1 : i32}
   // CHECK: firstGemmIdx = 2 : i32
   %8 = rock.transform %alloc by <affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)> by [<Unmerge{32} ["exp1"] at [1] -> ["dim0"] at [0]>, <PassThrough ["dim1"] at [2] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [3] -> ["dim2"] at [2]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 32, 1, 128] -> [32, 1, 128]> : memref<32x1x128xf16> to memref<1x32x1x128xf16>
   %9 = rock.transform %8 by <affine_map<(d0, d1, d2, d3) -> (d0, d2, d1, d3)> by [<PassThrough ["dim0", "dim2", "dim1", "dim3"] at [0, 1, 2, 3] -> ["dim0", "dim2", "dim1", "dim3"] at [0, 2, 1, 3]>] bounds = [1, 1, 32, 128] -> [1, 32, 1, 128]> : memref<1x32x1x128xf16> to memref<1x1x32x128xf16>
@@ -63,7 +63,7 @@ func.func @find_no_change(%arg0: memref<4096xf32>, %arg1: memref<4096xf32>, %arg
     rock.yield
   }
     %alloc = softmax(qk) * %0 : memref<1x64x64xf32> -> memref<1x64x64xf32>
-  } {arch = "gfx942:sramecc+:xnack-", features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16>, firstGemmIdx = 0 : i32, softmaxType = f32}
+  } {arch = "gfx942:sramecc+:xnack-", features = #rock<GemmFeatures mfma|dot|atomic_add|atomic_add_f16>, firstGemmIdx = 0 : i32, softmaxType = f32, splitKV = 1 : i32}
   // CHECK: firstGemmIdx = 0 : i32
   %3 = rock.transform %alloc by <affine_map<(d0) -> (0, d0 floordiv 64, d0 mod 64)> by [<Merge{1, 64, 64} ["dim0"] at [0] -> ["col0", "col1", "col2"] at [0, 1, 2]>] bounds = [4096] -> [1, 64, 64]> : memref<1x64x64xf32> to memref<4096xf32>
   memref.copy %3, %arg3 : memref<4096xf32> to memref<4096xf32>
