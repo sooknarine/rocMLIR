@@ -105,26 +105,59 @@ def parse_config_csv(config_file):
         print(f"Error reading config file: {e}")
         sys.exit(1)
 
-def compile_and_collect_data(config, operation):
+def parse_test_args(test_vector):
+    """
+    Parse test vector arguments to handle boolean flags.
+    For patterns like '-flag', 'false' - remove both
+    For patterns like '-flag', 'true' - keep only the flag
+    For other patterns - keep as is
+    """
+    args = test_vector.split()
+    parsed_args = []
+    i = 0
+    
+    while i < len(args):
+        current_arg = args[i]
+        
+        # Check if this is a flag (starts with '-') and has a next argument
+        if current_arg.startswith('-') and i + 1 < len(args):
+            next_arg = args[i + 1]
+            
+            # Check if the next argument is a boolean value
+            if next_arg.lower() in ['true', 'false']:
+                # Only include the flag if the value is 'true'
+                if next_arg.lower() == 'true':
+                    parsed_args.append(current_arg)
+                # Skip both the flag and the boolean value
+                i += 2
+            else:
+                # Not a boolean flag, keep both arguments
+                parsed_args.append(current_arg)
+                parsed_args.append(next_arg)
+                i += 2
+        else:
+            # Single argument or last argument, keep as is
+            parsed_args.append(current_arg)
+            i += 1
+    
+    return parsed_args
+
+def compile_and_collect_data(config, operation, rocmlir_gen_path,
+                             rocmlir_driver_path):
     """
     Compile and collect the resulting data points that we are interested in
     """
-
-    # TODO: Need to add in a function to parse the testVector so that we remove
-    # the flags that do not need to be applied. I also need to add in some logic
-    # for making sure that we can find the proper binaries.
-    """
     # Build the rocmlir-gen command
     rocmlir_gen_cmd = [
-        "~/rocMLIR/build/bin/rocmlir-gen",
-        "--operation", "attention",
+        rocmlir_gen_path,
+        "--operation", operation,
         "--arch", config["# arch"],
         "--num_cu", config["numCUs"]
     ]
 
     # Parse and add the test vector arguments
     test_vector = config["testVector"]
-    test_args = test_vector.split()
+    test_args = parse_test_args(test_vector)
     rocmlir_gen_cmd.extend(test_args)
 
     # Add perf_config
@@ -132,11 +165,11 @@ def compile_and_collect_data(config, operation):
     
     # Build the rocmlir-driver command
     rocmlir_driver_cmd = [
-        "~/rocMLIR/build/bin/rocmlir-driver",
+        rocmlir_driver_path,
         "-c",
         "--debug-only=serialize-to-blob"
     ]
-
+    print(rocmlir_gen_cmd)
     try:
         # Execute the piped command
         # First process: rocmlir-gen
@@ -165,19 +198,14 @@ def compile_and_collect_data(config, operation):
         driver_output, _ = driver_process.communicate()
         gen_process.wait()
         
-        # Write output to file
-        with open("compile-output.mlir", "w") as f:
-            f.write(driver_output)
-        
         # Parse the output to extract metrics
-        metrics = parse_compile_output(driver_output)
+        #metrics = parse_compile_output(driver_output)
         
-        return metrics
+        #return metrics
         
     except Exception as e:
         print(f"Error executing compilation command: {e}")
         return None
-    """
 
 def main():
     """Main function to process configurations and collect tuning data."""
@@ -200,9 +228,13 @@ def main():
     
     # Process each configuration
     results = []
-    for config in enumerate(configs):
-        metrics = compile_and_collect_data(config, args.op)
+    for config in configs:
+        metrics = compile_and_collect_data(config, args.op, rocmlir_gen_path,
+                                           rocmlir_driver_path)
         results.append(metrics)
+        # Early return for debugging purposes (can remove once we get it working
+        # for the first case)
+        return
 
 if __name__ == "__main__":
     main()
