@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import csv
 import os
 import re
 import shutil
@@ -320,7 +321,6 @@ def parse_results(gen_files):
     llc_file = gen_files[-1]  # The last file is the llc output
     parse_llc_results(tuning_data, llc_file)
 
-    print(tuning_data)
     return tuning_data
     
 
@@ -347,7 +347,70 @@ def compile_and_collect_data(config, operation, binaries):
         except Exception as e:
             print(f"  Warning: Could not remove {temp_file}: {e}")
 
+    print(results)
     return results
+
+def write_results_to_csv(results, configs):
+    """
+    Write the collected tuning data results to a CSV file.
+    
+    Args:
+        results: List of tuning data dictionaries
+        configs: List of original configuration dictionaries
+        output_file: Path to the output CSV file
+    """
+    if not results:
+        print("No results to write")
+        return
+    
+    # Define the fieldnames for the CSV
+    fieldnames = [
+        'arch',
+        'numCUs',
+        'testVector',
+        'perfConfig',
+        'blocksize',
+        'gridsize',
+        'vgpr_count',
+        'vgpr_spills',
+        'sgpr_count',
+        'sgpr_spills',
+        'LDS_allocated',
+        'occupancy'
+    ]
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = f"tuning_results_{timestamp}.csv"
+    
+    try:
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write the header
+            writer.writeheader()
+            
+            # Write each result row
+            for i, (config, result) in enumerate(zip(configs, results)):
+                row = {
+                    'arch': config.get("# arch", ""),
+                    'numCUs': config.get("numCUs", ""),
+                    'testVector': config.get("testVector", ""),
+                    'perfConfig': config.get("perfConfig (exhaustive)", ""),
+                    'blocksize': result.get('blocksize', ''),
+                    'gridsize': result.get('gridsize', ''),
+                    'vgpr_count': result.get('vgpr_count', ''),
+                    'vgpr_spills': result.get('vgpr_spills', ''),
+                    'sgpr_count': result.get('sgpr_count', ''),
+                    'sgpr_spills': result.get('sgpr_spills', ''),
+                    'LDS_allocated': result.get('LDS_allocated', ''),
+                    'occupancy': result.get('occupancy', '')
+                }
+                writer.writerow(row)
+        
+        print(f"Results written to {output_file}")
+        
+    except Exception as e:
+        print(f"Error writing results to CSV: {e}")
 
 def main():
     """Main function to process configurations and collect tuning data."""
@@ -375,9 +438,10 @@ def main():
         results.append(metrics)
         # TODO: Early return for debugging purposes (can remove once we get it
         # working for the first case)
-        return
+        break
     
-    #TODO: Need to add writing the resulting csv to the results dir
+    #Write the results to a final CSV file
+    write_results_to_csv(results, configs)
     
 
 if __name__ == "__main__":
