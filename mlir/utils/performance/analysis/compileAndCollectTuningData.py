@@ -328,8 +328,6 @@ def compile_and_collect_data(config, operation, binaries):
     """
     Compile and collect the resulting data points that we are interested in
     """
-    arch = config["# arch"].split(':')[0]
-
     # Get current timestamp in a filesystem-friendly format
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -347,7 +345,6 @@ def compile_and_collect_data(config, operation, binaries):
         except Exception as e:
             print(f"  Warning: Could not remove {temp_file}: {e}")
 
-    print(results)
     return results
 
 def write_results_to_csv(results, configs):
@@ -412,6 +409,17 @@ def write_results_to_csv(results, configs):
     except Exception as e:
         print(f"Error writing results to CSV: {e}")
 
+def print_progress(current, total):
+    """Print a progress bar to stdout."""
+    prefix = "Processing Configs"
+    percent = (current / total) * 100
+    bar_length = 40
+    filled_length = int(bar_length * current // total)
+    bar = '█' * filled_length + '-' * (bar_length - filled_length)
+    print(f'\r{prefix}: |{bar}| {current}/{total} ({percent:.1f}%)', end='', flush=True)
+    if current == total:
+        print()  # New line when complete
+
 def main():
     """Main function to process configurations and collect tuning data."""
     parser = argparse.ArgumentParser(
@@ -433,12 +441,14 @@ def main():
     
     # Process each configuration
     results = []
-    for config in configs:
+    total_configs = len(configs)
+    for i, config in enumerate(configs):
+        print_progress(i, total_configs)
         metrics = compile_and_collect_data(config, args.op, binaries)
         results.append(metrics)
         # TODO: Early return for debugging purposes (can remove once we get it
         # working for the first case)
-        break
+        #break
     
     #Write the results to a final CSV file
     write_results_to_csv(results, configs)
