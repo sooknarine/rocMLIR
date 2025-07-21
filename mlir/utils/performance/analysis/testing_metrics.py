@@ -2,7 +2,7 @@
 # important metrics (Arithmetic Intensity, Occupancy, Work Imbalance) and
 # plots correlation between them with the selected parameters.
 #
-# Usage: python3 ./testing-metrics.py <debug file(s)> [--n <percent>] [--m <metrics>] [--t <method for threshold>] [--o <output directory>] [--c <numCUs>]
+# Usage: python3 ./testing_metrics.py <debug file(s)> [--n <percent>] [--m <metrics>] [--t <method for threshold>] [--o <output directory>] [--c <numCUs>]
 # Arguments:
 #       <debug file(s)>               Input file(s) in .tsv.debug format
 #       --n <percent>                 Percent of the best perfconfigs to be considered (default=5) - doesn't affect analysis when checking only the best perfConfigs

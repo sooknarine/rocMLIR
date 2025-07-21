@@ -25,6 +25,7 @@ import sys
 import tempfile
 
 from datetime import datetime
+from testing_metrics import calculateOccupancy
 
 # Global template for tuning data structure
 TUNING_DATA_TEMPLATE = {
@@ -363,6 +364,9 @@ def parse_results(gen_files):
 
     dbg_message_file = gen_files[2]
     parse_driver_debug_results(tuning_data, dbg_message_file)
+
+    # Calculate occupancy using the method in testing_metrics.py
+    #tuning_data['occupancy'] = calculateOccupancy()
 
     print(tuning_data)
     return tuning_data
