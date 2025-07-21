@@ -17,12 +17,28 @@ Usage:
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
 from datetime import datetime
+
+# Global template for tuning data structure
+TUNING_DATA_TEMPLATE = {
+    'blocksize': None,
+    'gridsize': None,
+    'vgpr_count': None,
+    'vgpr_spills': None,
+    'sgpr_count': None,
+    'sgpr_spills': None,
+    'LDS_allocated': None,
+    'occupancy': None
+}
+
+def create_tuning_data():
+    return TUNING_DATA_TEMPLATE.copy()
 
 def check_rocmlir_binaries():
     """
@@ -49,7 +65,7 @@ def check_rocmlir_binaries():
     # Check if build/bin directory exists
     if not os.path.exists(build_bin_dir):
         print(f"Error: Build directory not found at {build_bin_dir}")
-        print("Please make sure rocMLIR is built and the build directory exists.")
+        print("Please make sure the rocMLIR build directory exists.")
         sys.exit(1)
 
     # Check for rocmlir-gen
@@ -170,22 +186,16 @@ def parse_test_args(test_vector):
 
     return parsed_args
 
-def compile_and_collect_data(config, operation, binaries):
-    """
-    Compile and collect the resulting data points that we are interested in
-    """
-    results = []
+def compile_config(config, operation, binaries, timestamp):
     arch = config["# arch"].split(':')[0]
-
-    # Get current timestamp in a filesystem-friendly format
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    num_cu = config["numCUs"]
 
     # Build the rocmlir-gen command
     rocmlir_gen_cmd = [
         binaries[0],
         "--operation", operation,
         "--arch", arch,
-        "--num_cu", config["numCUs"],
+        "--num_cu", num_cu,
     ]
 
     # Parse and add the test vector arguments
@@ -198,7 +208,8 @@ def compile_and_collect_data(config, operation, binaries):
                             config["perfConfig (exhaustive)"]])
     
     # Add output file
-    rocmlir_gen_cmd.extend(["-o", f"rocmlir-gen-output-{arch}-{timestamp}.mlir"])
+    rocmlir_gen_cmd.extend(["-o",
+                            f"rocmlir-gen-output-{arch}-{timestamp}.mlir"])
 
     # Build the rocmlir-driver command
     rocmlir_driver_cmd = [
@@ -231,71 +242,111 @@ def compile_and_collect_data(config, operation, binaries):
         f"-mcpu={arch}",
         f"rocmlir-opt-output-{arch}-{timestamp}.bc"
     ]
+
+    commands = [rocmlir_gen_cmd, rocmlir_driver_cmd, rocmlir_translate_cmd,
+                opt_cmd, llc_cmd]
     
     # Execute commands sequentially
     try:
-        # First process: rocmlir-gen
-        gen_result = subprocess.run(
-            rocmlir_gen_cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        # Second process: rocmlir-driver
-        driver_result = subprocess.run(
-            rocmlir_driver_cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        # Third process: rocmlir-translate
-        translate_result = subprocess.run(
-            rocmlir_translate_cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-
-        # Fourth process: opt
-        opt_result = subprocess.run(
-            opt_cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        # Fifth process: llc
-        llc_result = subprocess.run(
-            llc_cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        # Clean up temporary files
-        temp_files = [
-            f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
-            f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
-            f"rocmlir-translate-output-{arch}-{timestamp}.ll",
-            f"rocmlir-opt-output-{arch}-{timestamp}.bc"
-            f"rocmlir-opt-output-{arch}-{timestamp}.s"
-        ]
-        
-        for temp_file in temp_files:
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            except Exception as e:
-                print(f"  Warning: Could not remove {temp_file}: {e}")
+        for cmd in commands:
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
 
     except subprocess.CalledProcessError as e:
         print(f"Command failed: {e.cmd}")
         print(f"Return code: {e.returncode}")
         print(f"Error output: {e.stderr}")
         return None
+    
+    return [
+        f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
+        f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
+        f"rocmlir-translate-output-{arch}-{timestamp}.ll",
+        f"rocmlir-opt-output-{arch}-{timestamp}.bc",
+        f"rocmlir-opt-output-{arch}-{timestamp}.s"
+    ]
+
+def parse_llc_results(tuning_data, llc_file):
+    # Parse the LLC assembly file for SGPR and VGPR information
+    if os.path.exists(llc_file):
+        try:
+            with open(llc_file, 'r') as f:
+                content = f.read()
+                
+                # Look for SGPR count
+                sgpr_match = re.search(r'\.sgpr_count:\s+(\d+)', content)
+                if sgpr_match:
+                    tuning_data['sgpr_count'] = int(sgpr_match.group(1))
+                
+                # Look for VGPR count
+                vgpr_match = re.search(r'\.vgpr_count:\s+(\d+)', content)
+                if vgpr_match:
+                    tuning_data['vgpr_count'] = int(vgpr_match.group(1))
+                
+                # Look for SGPR spill count
+                sgpr_spill_match = re.search(r'\.sgpr_spill_count:\s+(\d+)',
+                                             content)
+                if sgpr_spill_match:
+                    tuning_data['sgpr_spills'] = int(sgpr_spill_match.group(1))
+                
+                # Look for VGPR spill count
+                vgpr_spill_match = re.search(r'\.vgpr_spill_count:\s+(\d+)',
+                                             content)
+                if vgpr_spill_match:
+                    tuning_data['vgpr_spills'] = int(vgpr_spill_match.group(1))
+                
+        except Exception as e:
+            print(f"Error parsing LLC file {llc_file}: {e}")
+    else:
+        print(f"Warning: LLC file {llc_file} not found")
+
+def parse_results(gen_files):
+    """
+    This function parses the generated files to gather the desired information.
+    gen_files will contain all of the output files from the different stages
+    of compilation. It will be structured something like the following:
+      - rocmlir-gen output
+      - rocmlir-driver output
+      - rocmlir-translate output
+      - rocmlir-opt output
+      - rocmlir-llc output  
+    """
+    tuning_data = create_tuning_data()
+
+    llc_file = gen_files[-1]  # The last file is the llc output
+    parse_llc_results(tuning_data, llc_file)
+
+    print(tuning_data)
+    return tuning_data
+    
+
+def compile_and_collect_data(config, operation, binaries):
+    """
+    Compile and collect the resulting data points that we are interested in
+    """
+    arch = config["# arch"].split(':')[0]
+
+    # Get current timestamp in a filesystem-friendly format
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Compile the config
+    gen_files = compile_config(config, operation, binaries, timestamp)
+
+    # Parse the results from the compiled config
+    results = parse_results(gen_files)
+
+    # Clean up temporary files
+    for temp_file in gen_files:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception as e:
+            print(f"  Warning: Could not remove {temp_file}: {e}")
+
     return results
 
 def main():
