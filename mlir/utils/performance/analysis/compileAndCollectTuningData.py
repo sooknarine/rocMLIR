@@ -217,6 +217,7 @@ def compile_config(config, operation, binaries, timestamp):
         binaries[1],
         "-kernel-pipeline=gpu,rocdl",
         "--arch=gfx942",
+        "--debug-only=convert-rock-to-gpu",
         f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
         "-o", f"rocmlir-driver-output-{arch}-{timestamp}.mlir"
     ]
@@ -249,13 +250,22 @@ def compile_config(config, operation, binaries, timestamp):
     
     # Execute commands sequentially
     try:
-        for cmd in commands:
-            subprocess.run(
+        for i, cmd in enumerate(commands):
+            result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 check=True
             )
+
+            # We want to write the output from the rocmlir-driver command
+            # to a text file so that we can save the debug output
+            if i == 1:
+                # Write debug output to file
+                debug_file = f"rocmlir-driver-debug-{arch}-{timestamp}.txt"
+                with open(debug_file, 'w') as f:
+                    f.write(result.stderr)
+
 
     except subprocess.CalledProcessError as e:
         print(f"Command failed: {e.cmd}")
@@ -266,6 +276,7 @@ def compile_config(config, operation, binaries, timestamp):
     return [
         f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
         f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
+        f"rocmlir-driver-debug-{arch}-{timestamp}.txt",
         f"rocmlir-translate-output-{arch}-{timestamp}.ll",
         f"rocmlir-opt-output-{arch}-{timestamp}.bc",
         f"rocmlir-opt-output-{arch}-{timestamp}.s"
@@ -305,6 +316,34 @@ def parse_llc_results(tuning_data, llc_file):
     else:
         print(f"Warning: LLC file {llc_file} not found")
 
+def parse_driver_debug_results(tuning_data, dbg_message_file):
+    # Parse the rocmlir-driver debug output file for gridsize, blocksize, and
+    # lds usage information
+    if os.path.exists(dbg_message_file):
+        try:
+            with open(dbg_message_file, 'r') as f:
+                content = f.read()
+                
+                # Look for blocksize
+                blocksize_match = re.search(r'blockSize:\s*(\d+)', content)
+                if blocksize_match:
+                    tuning_data['blocksize'] = int(blocksize_match.group(1))
+
+                # Look for gridsize
+                gridsize_match = re.search(r'gridSize:\s*(\d+)', content)
+                if gridsize_match:
+                    tuning_data['gridsize'] = int(gridsize_match.group(1))
+
+                # Look for LDS_allocated
+                lds_match = re.search(r'ldsUsage:\s*(\d+)', content)
+                if lds_match:
+                    tuning_data['LDS_allocated'] = int(lds_match.group(1))
+                
+        except Exception as e:
+            print(f"Error parsing DBG file {dbg_message_file}: {e}")
+    else:
+        print(f"Warning: DBG file {dbg_message_file} not found")
+
 def parse_results(gen_files):
     """
     This function parses the generated files to gather the desired information.
@@ -312,15 +351,20 @@ def parse_results(gen_files):
     of compilation. It will be structured something like the following:
       - rocmlir-gen output
       - rocmlir-driver output
+      - rocmlir-driver debug output
       - rocmlir-translate output
       - rocmlir-opt output
       - rocmlir-llc output  
     """
     tuning_data = create_tuning_data()
 
-    llc_file = gen_files[-1]  # The last file is the llc output
+    llc_file = gen_files[-1]
     parse_llc_results(tuning_data, llc_file)
 
+    dbg_message_file = gen_files[2]
+    parse_driver_debug_results(tuning_data, dbg_message_file)
+
+    print(tuning_data)
     return tuning_data
     
 
@@ -416,7 +460,8 @@ def print_progress(current, total):
     bar_length = 40
     filled_length = int(bar_length * current // total)
     bar = '█' * filled_length + '-' * (bar_length - filled_length)
-    print(f'\r{prefix}: |{bar}| {current}/{total} ({percent:.1f}%)', end='', flush=True)
+    print(f'\r{prefix}: |{bar}| {current}/{total} ({percent:.1f}%)', end='',
+          flush=True)
     if current == total:
         print()  # New line when complete
 
@@ -448,11 +493,10 @@ def main():
         results.append(metrics)
         # TODO: Early return for debugging purposes (can remove once we get it
         # working for the first case)
-        #break
+        break
     
     #Write the results to a final CSV file
     write_results_to_csv(results, configs)
-    
 
 if __name__ == "__main__":
     main()
