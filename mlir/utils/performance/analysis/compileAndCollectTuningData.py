@@ -20,6 +20,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+
+from datetime import datetime
 
 def check_rocmlir_binaries():
     """
@@ -28,35 +31,60 @@ def check_rocmlir_binaries():
     """
     # Get the script's directory and find the rocMLIR root
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    
+
     # Navigate up from mlir/utils/performance to find rocMLIR root
-    rocmlir_root = os.path.abspath(os.path.join(script_dir, '..', '..', '..'))
-    
+    rocmlir_root = os.path.abspath(os.path.join(script_dir, '..', '..', '..',
+                                                '..'))
+
     # Define expected binary paths
     build_bin_dir = os.path.join(rocmlir_root, 'build', 'bin')
+    build_external_bin_dir = os.path.join(rocmlir_root, 'build', 'external',
+                                          'llvm-project', 'llvm', 'bin')
     rocmlir_gen_path = os.path.join(build_bin_dir, 'rocmlir-gen')
     rocmlir_driver_path = os.path.join(build_bin_dir, 'rocmlir-driver')
-    
+    rocmlir_translate_path = os.path.join(build_bin_dir, 'rocmlir-translate')
+    opt_path = os.path.join(build_external_bin_dir, 'opt')
+    llc_path = os.path.join(build_external_bin_dir, 'llc')
+
     # Check if build/bin directory exists
     if not os.path.exists(build_bin_dir):
         print(f"Error: Build directory not found at {build_bin_dir}")
         print("Please make sure rocMLIR is built and the build directory exists.")
         sys.exit(1)
-    
+
     # Check for rocmlir-gen
     if not os.path.exists(rocmlir_gen_path):
         print(f"Error: rocmlir-gen not found at {rocmlir_gen_path}")
         sys.exit(1)
-    
+
     # Check for rocmlir-driver
     if not os.path.exists(rocmlir_driver_path):
         print(f"Error: rocmlir-driver not found at {rocmlir_driver_path}")
         sys.exit(1)
-    
+
+    # Check for rocmlir-translate
+    if not os.path.exists(rocmlir_translate_path):
+        print(f"Error: rocmlir-translate not found at {rocmlir_translate_path}")
+        sys.exit(1)
+
+    # Check for opt
+    if not os.path.exists(opt_path):
+        print(f"Error: opt not found at {opt_path}")
+        sys.exit(1)
+
+    # Check for llc
+    if not os.path.exists(llc_path):
+        print(f"Error: llc not found at {llc_path}")
+        sys.exit(1)
+
     print(f"✓ Found rocmlir-gen: {rocmlir_gen_path}")
     print(f"✓ Found rocmlir-driver: {rocmlir_driver_path}")
-    
-    return rocmlir_gen_path, rocmlir_driver_path
+    print(f"✓ Found rocmlir-translate: {rocmlir_translate_path}")
+    print(f"✓ Found opt: {opt_path}")
+    print(f"✓ Found llc: {llc_path}")
+
+    return [rocmlir_gen_path, rocmlir_driver_path, rocmlir_translate_path,
+           opt_path, llc_path]
 
 def parse_config_csv(config_file):
     """Parse the input CSV file containing configuration data."""
@@ -115,14 +143,14 @@ def parse_test_args(test_vector):
     args = test_vector.split()
     parsed_args = []
     i = 0
-    
+
     while i < len(args):
         current_arg = args[i]
-        
+
         # Check if this is a flag (starts with '-') and has a next argument
         if current_arg.startswith('-') and i + 1 < len(args):
             next_arg = args[i + 1]
-            
+
             # Check if the next argument is a boolean value
             if next_arg.lower() in ['true', 'false']:
                 # Only include the flag if the value is 'true'
@@ -139,20 +167,25 @@ def parse_test_args(test_vector):
             # Single argument or last argument, keep as is
             parsed_args.append(current_arg)
             i += 1
-    
+
     return parsed_args
 
-def compile_and_collect_data(config, operation, rocmlir_gen_path,
-                             rocmlir_driver_path):
+def compile_and_collect_data(config, operation, binaries):
     """
     Compile and collect the resulting data points that we are interested in
     """
+    results = []
+    arch = config["# arch"].split(':')[0]
+
+    # Get current timestamp in a filesystem-friendly format
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     # Build the rocmlir-gen command
     rocmlir_gen_cmd = [
-        rocmlir_gen_path,
+        binaries[0],
         "--operation", operation,
-        "--arch", config["# arch"],
-        "--num_cu", config["numCUs"]
+        "--arch", arch,
+        "--num_cu", config["numCUs"],
     ]
 
     # Parse and add the test vector arguments
@@ -161,51 +194,109 @@ def compile_and_collect_data(config, operation, rocmlir_gen_path,
     rocmlir_gen_cmd.extend(test_args)
 
     # Add perf_config
-    rocmlir_gen_cmd.extend(["--perf_config", config["perfConfig (exhaustive)"]])
+    rocmlir_gen_cmd.extend(["--perf_config",
+                            config["perfConfig (exhaustive)"]])
     
+    # Add output file
+    rocmlir_gen_cmd.extend(["-o", f"rocmlir-gen-output-{arch}-{timestamp}.mlir"])
+
     # Build the rocmlir-driver command
     rocmlir_driver_cmd = [
-        rocmlir_driver_path,
-        "-c",
-        "--debug-only=serialize-to-blob"
+        binaries[1],
+        "-kernel-pipeline=gpu,rocdl",
+        "--arch=gfx942",
+        f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
+        "-o", f"rocmlir-driver-output-{arch}-{timestamp}.mlir"
     ]
-    print(rocmlir_gen_cmd)
+
+    # Build the rocmlir-translate command
+    rocmlir_translate_cmd = [
+        binaries[2],
+        "-gpu-module-to-rocdlir",
+        f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
+        "-o", f"rocmlir-translate-output-{arch}-{timestamp}.ll"
+    ]
+
+    # Build the opt command
+    opt_cmd = [
+        binaries[3],
+        "-O3",
+        f"rocmlir-translate-output-{arch}-{timestamp}.ll",
+        "-o", f"rocmlir-opt-output-{arch}-{timestamp}.bc"
+    ]
+
+    # Build the llc command
+    llc_cmd = [
+        binaries[4],
+        f"-mcpu={arch}",
+        f"rocmlir-opt-output-{arch}-{timestamp}.bc"
+    ]
+    
+    # Execute commands sequentially
     try:
-        # Execute the piped command
         # First process: rocmlir-gen
-        gen_process = subprocess.Popen(
+        gen_result = subprocess.run(
             rocmlir_gen_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
-            shell=False
+            check=True
         )
-        
-        # Second process: rocmlir-driver (takes input from gen_process)
-        driver_process = subprocess.Popen(
+
+        # Second process: rocmlir-driver
+        driver_result = subprocess.run(
             rocmlir_driver_cmd,
-            stdin=gen_process.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # Combine stderr and stdout
+            capture_output=True,
             text=True,
-            shell=False
+            check=True
         )
+
+        # Third process: rocmlir-translate
+        translate_result = subprocess.run(
+            rocmlir_translate_cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+
+        # Fourth process: opt
+        opt_result = subprocess.run(
+            opt_cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        # Fifth process: llc
+        llc_result = subprocess.run(
+            llc_cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        # Clean up temporary files
+        temp_files = [
+            f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
+            f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
+            f"rocmlir-translate-output-{arch}-{timestamp}.ll",
+            f"rocmlir-opt-output-{arch}-{timestamp}.bc"
+            f"rocmlir-opt-output-{arch}-{timestamp}.s"
+        ]
         
-        # Close the stdout of the first process to allow it to terminate
-        gen_process.stdout.close()
-        
-        # Wait for both processes to complete and get output
-        driver_output, _ = driver_process.communicate()
-        gen_process.wait()
-        
-        # Parse the output to extract metrics
-        #metrics = parse_compile_output(driver_output)
-        
-        #return metrics
-        
-    except Exception as e:
-        print(f"Error executing compilation command: {e}")
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except Exception as e:
+                print(f"  Warning: Could not remove {temp_file}: {e}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed: {e.cmd}")
+        print(f"Return code: {e.returncode}")
+        print(f"Error output: {e.stderr}")
         return None
+    return results
 
 def main():
     """Main function to process configurations and collect tuning data."""
@@ -218,9 +309,9 @@ def main():
     parser.add_argument('config_csv', help='Path to the configuration CSV file')
     
     args = parser.parse_args()
-    
+
     # Check to make sure that we can find the rocmlir binaries
-    rocmlir_gen_path, rocmlir_driver_path = check_rocmlir_binaries()
+    binaries = check_rocmlir_binaries()
 
     # Parse the configuration file
     configs = parse_config_csv(args.config_csv)
@@ -229,12 +320,14 @@ def main():
     # Process each configuration
     results = []
     for config in configs:
-        metrics = compile_and_collect_data(config, args.op, rocmlir_gen_path,
-                                           rocmlir_driver_path)
+        metrics = compile_and_collect_data(config, args.op, binaries)
         results.append(metrics)
-        # Early return for debugging purposes (can remove once we get it working
-        # for the first case)
+        # TODO: Early return for debugging purposes (can remove once we get it
+        # working for the first case)
         return
+    
+    #TODO: Need to add writing the resulting csv to the results dir
+    
 
 if __name__ == "__main__":
     main()
