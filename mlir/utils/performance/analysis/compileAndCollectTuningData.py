@@ -27,6 +27,10 @@ import tempfile
 from datetime import datetime
 from testing_metrics import calculateOccupancy
 
+# TODO use AmdArchDb.py (when it's implemented). 4 works for all current
+# architectures, but this may not hold in the future.
+numEUPerCU = 4
+
 # Global template for tuning data structure
 TUNING_DATA_TEMPLATE = {
     'blocksize': None,
@@ -188,9 +192,115 @@ def parse_test_args(test_vector):
 
     return parsed_args
 
+def convertConvTestArgs(test_args, operation):
+    """
+    Convert test arguments for convolution operations to the format expected
+    by rocmlir-gen.
+    
+    Args:
+        test_args: List of test arguments parsed from the test vector.
+    
+    Returns:
+        List of converted test arguments.
+    """
+    # Build converted arguments list
+    converted_args = []
+    
+    # Process arguments in pairs
+    i = 0
+    while i < len(test_args):
+        if i == 0:
+            # The first argument contains the operation type
+            dataType = None
+            if test_args[0] == 'conv':
+                dataType = 'f32'
+            elif test_args[0] == 'convfp16':
+                dataType = 'f16'
+            elif test_args[0] == 'convbfp16':
+                dataType = 'bf16'
+            elif test_args[0] == 'convint8':
+                dataType = 'i8'
+            elif test_args[0] == 'convfp8_fp8':
+                dataType = 'fp8_fp8'
+            elif test_args[0] == 'convfp8':
+                dataType = 'fp8'
+            elif test_args[0] == 'convfp8_bf8':
+                dataType = 'fp8_bf8'
+            elif test_args[0] == 'convbf8_fp8':
+                dataType = 'bf8_fp8'
+            elif test_args[0] == 'convbf8_bf8':
+                dataType = 'bf8_bf8'
+            converted_args.extend(["-t", dataType])
+            i += 1
+            continue
+
+        if i + 1 < len(test_args):
+            opt = test_args[i]
+            val = test_args[i + 1]
+            
+            # Map short form arguments to rocmlir-gen long form
+            if opt == "-n":
+                converted_args.extend(["--batchsize", val])
+            elif opt == "-c":
+                converted_args.extend(["--in_channels", val])
+            elif opt == "-H":
+                converted_args.extend(["--in_h", val])
+            elif opt == "-W":
+                converted_args.extend(["--in_w", val])
+            elif opt == "-k":
+                converted_args.extend(["--out_channels", val])
+            elif opt == "-y":
+                converted_args.extend(["--fil_h", val])
+            elif opt == "-x":
+                converted_args.extend(["--fil_w", val])
+            elif opt == "-p":
+                converted_args.extend(["--padding_h", val])
+            elif opt == "-q":
+                converted_args.extend(["--padding_w", val])
+            elif opt == "-u":
+                converted_args.extend(["--conv_stride_h", val])
+            elif opt == "-v":
+                converted_args.extend(["--conv_stride_w", val])
+            elif opt == "-l":
+                converted_args.extend(["--dilation_h", val])
+            elif opt == "-j":
+                converted_args.extend(["--dilation_w", val])
+            elif opt == "-g":
+                converted_args.extend(["-g", val])
+            elif opt == "-f":
+                converted_args.extend(["--fil_layout", val.lower()])
+            elif opt == "-I":
+                converted_args.extend(["--in_layout", val.lower()])
+            elif opt == "-O":
+                converted_args.extend(["--out_layout", val.lower()])
+            elif opt == "-F":
+                # Convert direction flag to operation
+                direction_val = int(val)
+                if direction_val == 1:
+                    operation = "conv"
+                elif direction_val == 2:
+                    operation = "conv_bwd_data"
+                elif direction_val == 4:
+                    operation = "conv_bwd_weight"
+            else:
+                # Unknown argument, do not add
+                pass
+            i += 2
+    
+    return [converted_args, operation]
+
 def compile_config(config, operation, binaries, timestamp):
     arch = config["# arch"].split(':')[0]
     num_cu = config["numCUs"]
+
+    # Parse and add the test vector arguments
+    test_vector = config["testVector"]
+    test_args = parse_test_args(test_vector)
+
+    # If operation is a convolution, we need to convert the test_args to a
+    # format that rocmlir-gen can understand
+    if operation.lower() == 'conv':
+        [test_args, operation] = convertConvTestArgs(test_args, operation)
 
     # Build the rocmlir-gen command
     rocmlir_gen_cmd = [
@@ -199,10 +309,7 @@ def compile_config(config, operation, binaries, timestamp):
         "--arch", arch,
         "--num_cu", num_cu,
     ]
-
-    # Parse and add the test vector arguments
-    test_vector = config["testVector"]
-    test_args = parse_test_args(test_vector)
+    
     rocmlir_gen_cmd.extend(test_args)
 
     # Add perf_config
@@ -227,6 +334,7 @@ def compile_config(config, operation, binaries, timestamp):
     rocmlir_translate_cmd = [
         binaries[2],
         "-gpu-module-to-rocdlir",
+        "-allow-unregistered-dialect",
         f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
         "-o", f"rocmlir-translate-output-{arch}-{timestamp}.ll"
     ]
@@ -248,7 +356,7 @@ def compile_config(config, operation, binaries, timestamp):
 
     commands = [rocmlir_gen_cmd, rocmlir_driver_cmd, rocmlir_translate_cmd,
                 opt_cmd, llc_cmd]
-    
+
     # Execute commands sequentially
     try:
         for i, cmd in enumerate(commands):
@@ -269,7 +377,7 @@ def compile_config(config, operation, binaries, timestamp):
 
 
     except subprocess.CalledProcessError as e:
-        print(f"Command failed: {e.cmd}")
+        print(f"\nCommand failed: {' '.join(e.cmd)}")
         print(f"Return code: {e.returncode}")
         print(f"Error output: {e.stderr}")
         return None
@@ -365,12 +473,189 @@ def parse_results(gen_files):
     dbg_message_file = gen_files[2]
     parse_driver_debug_results(tuning_data, dbg_message_file)
 
-    # Calculate occupancy using the method in testing_metrics.py
-    #tuning_data['occupancy'] = calculateOccupancy()
-
-    print(tuning_data)
     return tuning_data
     
+def parse_perf_config(perf_config, num_cu):
+    """
+    Parse the perfConfig string to extract tuning parameters.
+    
+    Format: attn:v1:MPerBlock,NPerBlock,KPerBlock,MPerWave,NPerWave,kPack,
+            splitKFactor,forceUnroll,ThreadCopyMore
+    
+    Returns:
+        dict: Dictionary containing parsed parameters
+    """
+    try:
+        # Split by ':' to separate operation, version, and parameters
+        parts = perf_config.split(':')
+        if len(parts) < 2:
+            raise ValueError(f"Invalid perfConfig format: {perf_config}")
+        
+        # For attention ops: operation:version:parameters
+        # For gemm/conv ops: version:parameters
+        if len(parts) >= 3:
+            # Attention format - extract the parameters part (everything after the second ':')
+            params_str = parts[2]
+        else:
+            # GEMM/conv format - parameters are after the first ':'
+            params_str = parts[1]
+        
+        # Split parameters by comma
+        params = params_str.split(',')
+        if len(params) < 7:  # At minimum we need 7 parameters for splitKFactor
+            raise ValueError(f"Insufficient parameters in perfConfig")
+        
+        # Parse the required parameters
+        parsed_params = {
+            'MPerBlock': int(params[0]),
+            'NPerBlock': int(params[1]),
+            'KPerBlock': int(params[2]),
+            'MPerWave': int(params[3]),
+            'NPerWave': int(params[4]),
+            'kPack': int(params[5]),
+            'splitKFactor': int(params[6])
+        }
+        
+        # Calculate MNPerWave
+        parsed_params['MNPerWave'] = parsed_params['MPerWave'] * \
+                                     parsed_params['NPerWave']
+
+        # Calculate minNumWaves based on numCUs and numEUPerCU
+        parsed_params['minNumWaves'] = int(num_cu) * numEUPerCU
+        
+        return parsed_params
+        
+    except (ValueError, IndexError) as e:
+        print(f"Error parsing perfConfig '{perf_config}': {e}")
+        return None
+    
+def calculateConvN(arg_dict):
+    """
+    This function calculate the N value for convolution operations based on
+    the provided arguments in the test vector.
+    """
+    # TODO: Right now we are working under the assumption that we will only ever
+    # need to calculate the N value for forward convolutions based on the
+    # configs in tier1-tuning-data. If in the future this changes, we will need
+    # to update this function to handle calculations for different types of
+    # backwards convolutions.
+
+    # Forward convolution: N = batch_size * output_height * output_width
+    # This is based off of the calculation that is done in TosaToLinalgNamed
+    batch_size = int(arg_dict.get('-n', 1))
+    input_height = int(arg_dict.get('-H', 0))
+    input_width = int(arg_dict.get('-W', 0))
+    pad_top = int(arg_dict.get('-p', 0))
+    pad_bottom = int(arg_dict.get('-p', 0))  # Assuming symmetric padding
+    pad_left = int(arg_dict.get('-q', 0))
+    pad_right = int(arg_dict.get('-q', 0))   # Assuming symmetric padding
+    stride_y = int(arg_dict.get('-u', 1))
+    stride_x = int(arg_dict.get('-v', 1))
+    filter_height = int(arg_dict.get('-y', 1))
+    filter_width = int(arg_dict.get('-x', 1))
+    # Assuming same dilation for both dimensions
+    dilation_y = int(arg_dict.get('-l', 1))
+    dilation_x = int(arg_dict.get('-l', 1))
+    
+    # Calculate output dimensions using the formula:
+    # output_dim = ((input_dim + pad_total - 
+    #               (dilation*(filter_size-1)+1)) / stride) + 1
+    output_height = ((input_height + pad_top + pad_bottom - \
+                     (dilation_y * (filter_height - 1) + 1)) // stride_y) + 1
+    output_width = ((input_width + pad_left + pad_right - \
+                     (dilation_x * (filter_width - 1) + 1)) // stride_x) + 1
+
+    N = batch_size * output_height * output_width
+
+    return N
+    
+def extract_MNG_from_config(config, operation):
+    """
+    Extract M, N, and G values from the testVector based on the operation type.
+    
+    Args:
+        config: Configuration dictionary containing testVector
+        operation: Operation type (e.g., 'attention', 'gemm', 'conv2d')
+    
+    Returns:
+        tuple: (M, N, G) values based on operation type
+    """
+    test_vector = config["testVector"]
+    test_args = parse_test_args(test_vector)
+    
+    # Create a dictionary of arguments for easier lookup
+    arg_dict = {}
+    i = 0
+    while i < len(test_args):
+        if test_args[i].startswith('-') and i + 1 < len(test_args):
+            # Check if next arg is a value (not another flag)
+            if not test_args[i + 1].startswith('-'):
+                arg_dict[test_args[i]] = test_args[i + 1]
+                i += 2
+            else:
+                # Flag without value
+                arg_dict[test_args[i]] = True
+                i += 1
+        else:
+            i += 1
+    
+    M = None
+    N = None
+    G = None
+    
+    try:
+        if operation.lower() in ['attention', 'attn']:
+            # For attention ops: M = seq_len_q, N = seq_len_k, G = g
+            M = int(arg_dict.get('-seq_len_q', 0))
+            N = int(arg_dict.get('-seq_len_k', 0))
+            G = int(arg_dict.get('-g', 0))
+            
+        elif operation.lower() in ['gemm']:
+            # For GEMM ops: M = m, N = n, G = g
+            M = int(arg_dict.get('-m', 0))
+            N = int(arg_dict.get('-n', 0))
+            G = int(arg_dict.get('-g', 0))
+            
+        elif operation.lower() in ['conv2d', 'conv']:
+            # For conv ops: M = k, N = calculateConvN, G = g
+            M = int(arg_dict.get('-k', 0))
+            N = calculateConvN(arg_dict)
+            G = int(arg_dict.get('-g', 0))
+            
+        else:
+            print(f"Warning: Unknown operation type '{operation}'")
+            return None, None, None
+            
+    except (ValueError, TypeError) as e:
+        print(f"Warning: Error parsing M, N, G values from testVector: {e}")
+        print(f"testVector: {test_vector}")
+        print(f"Parsed args: {arg_dict}")
+        return None, None, None
+    
+    return M, N, G
+
+def gatherOccupancyParameters(config, operation):
+    '''
+    This function gathers all of the parameters that are needed to calculate
+    the theoretical occupancy
+    '''
+    perf_config = config["perfConfig (exhaustive)"]
+    num_cu = config["numCUs"]
+    parsed_params = parse_perf_config(perf_config, num_cu)
+    
+    if parsed_params is None:
+        return [None] * 8  # Return None values if parsing fails
+    
+    # Extract the required parameters for occupancy calculation
+    [M, N, G] = extract_MNG_from_config(config, operation)
+    
+    MPerBlock = int(parsed_params['MPerBlock'])
+    NPerBlock = int(parsed_params['NPerBlock'])
+    MNPerWave = int(parsed_params['MNPerWave'])
+    minNumWaves = int(parsed_params['minNumWaves'])
+    splitKFactor = int(parsed_params['splitKFactor'])
+
+    return [M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor]
 
 def compile_and_collect_data(config, operation, binaries):
     """
@@ -384,6 +669,13 @@ def compile_and_collect_data(config, operation, binaries):
 
     # Parse the results from the compiled config
     results = parse_results(gen_files)
+
+    # Calculate occupancy using the method in testing_metrics.py
+    [M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor] = \
+                                    gatherOccupancyParameters(config, operation)
+    results['occupancy'] = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
+                                              MNPerWave, minNumWaves,
+                                              splitKFactor)
 
     # Clean up temporary files
     for temp_file in gen_files:
@@ -495,9 +787,6 @@ def main():
         print_progress(i, total_configs)
         metrics = compile_and_collect_data(config, args.op, binaries)
         results.append(metrics)
-        # TODO: Early return for debugging purposes (can remove once we get it
-        # working for the first case)
-        break
     
     #Write the results to a final CSV file
     write_results_to_csv(results, configs)
