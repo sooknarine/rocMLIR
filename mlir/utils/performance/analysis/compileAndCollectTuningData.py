@@ -324,7 +324,7 @@ def compile_config(config, operation, binaries, timestamp):
     rocmlir_driver_cmd = [
         binaries[1],
         "-kernel-pipeline=gpu,rocdl",
-        "--arch=gfx942",
+        "--arch={arch}",
         "--debug-only=convert-rock-to-gpu",
         f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
         "-o", f"rocmlir-driver-output-{arch}-{timestamp}.mlir"
@@ -516,7 +516,7 @@ def parse_perf_config(perf_config, num_cu):
             'splitKFactor': int(params[6])
         }
         
-        # Calculate MNPerWave
+        # Calculate M*N PerWave
         parsed_params['MNPerWave'] = parsed_params['MPerWave'] * \
                                      parsed_params['NPerWave']
 
@@ -533,13 +533,13 @@ def calculateConvN(arg_dict):
     """
     This function calculate the N value for convolution operations based on
     the provided arguments in the test vector.
-    """
-    # TODO: Right now we are working under the assumption that we will only ever
+
+    Note: Right now we are working under the assumption that we will only ever
     # need to calculate the N value for forward convolutions based on the
     # configs in tier1-tuning-data. If in the future this changes, we will need
     # to update this function to handle calculations for different types of
     # backwards convolutions.
-
+    """
     # Forward convolution: N = batch_size * output_height * output_width
     # This is based off of the calculation that is done in TosaToLinalgNamed
     batch_size = int(arg_dict.get('-n', 1))
@@ -555,7 +555,7 @@ def calculateConvN(arg_dict):
     filter_width = int(arg_dict.get('-x', 1))
     # Assuming same dilation for both dimensions
     dilation_y = int(arg_dict.get('-l', 1))
-    dilation_x = int(arg_dict.get('-l', 1))
+    dilation_x = int(arg_dict.get('-j', 1))
     
     # Calculate output dimensions using the formula:
     # output_dim = ((input_dim + pad_total - 
