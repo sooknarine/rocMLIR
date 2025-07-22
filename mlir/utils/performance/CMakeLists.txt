@@ -7,7 +7,6 @@ if("ck" IN_LIST ROCMLIR_ENABLE_BENCHMARKS)
 endif()
 
 set(PERFORMANCE_SCRIPTS
-  compileAndCollectTuningData.py
   convertRocBlasToPerfRunner.py
   createFusionPerformanceReports.py
   createPerformanceReports.py
