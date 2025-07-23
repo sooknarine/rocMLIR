@@ -27,46 +27,52 @@ import tempfile
 from datetime import datetime
 from testing_metrics import calculateOccupancy
 
+
 # TODO use AmdArchDb.py (when it's implemented). 4 works for all current
 # architectures, but this may not hold in the future.
 numEUPerCU = 4
 
-# Global template for tuning data structure
-TUNING_DATA_TEMPLATE = {
-    'blocksize': None,
-    'gridsize': None,
-    'vgpr_count': None,
-    'vgpr_spills': None,
-    'sgpr_count': None,
-    'sgpr_spills': None,
-    'LDS_allocated': None,
-    'occupancy': None
-}
+class TuningData:
+    """Class to represent tuning data results."""
+    
+    def __init__(self):
+        self.blocksize = None
+        self.gridsize = None
+        self.vgpr_count = None
+        self.vgpr_spills = None
+        self.sgpr_count = None
+        self.sgpr_spills = None
+        self.LDS_allocated = None
+        self.occupancy = None
+    
+    def to_dict(self):
+        """Convert to dictionary format for CSV writing."""
+        return {
+            'blocksize': self.blocksize,
+            'gridsize': self.gridsize,
+            'vgpr_count': self.vgpr_count,
+            'vgpr_spills': self.vgpr_spills,
+            'sgpr_count': self.sgpr_count,
+            'sgpr_spills': self.sgpr_spills,
+            'LDS_allocated': self.LDS_allocated,
+            'occupancy': self.occupancy
+        }
 
 def create_tuning_data():
-    return TUNING_DATA_TEMPLATE.copy()
+    return TuningData()
 
 def check_rocmlir_binaries():
     """
     Check if rocmlir-gen and rocmlir-driver binaries can be found.
     Returns the paths to the binaries if found, otherwise exits.
     """
-    # Get the script's directory and find the rocMLIR root
-    script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # Navigate up from mlir/utils/performance to find rocMLIR root
-    rocmlir_root = os.path.abspath(os.path.join(script_dir, '..', '..', '..',
-                                                '..'))
-
-    # Define expected binary paths
-    build_bin_dir = os.path.join(rocmlir_root, 'build', 'bin')
-    build_external_bin_dir = os.path.join(rocmlir_root, 'build', 'external',
-                                          'llvm-project', 'llvm', 'bin')
+    # Define expected binary paths. This scripts expects that all of the
+    # scripts have already been built (using ninja ci-performance-scripts) and
+    # are located in the build/bin directory
+    build_bin_dir = os.path.dirname(os.path.abspath(__file__))
     rocmlir_gen_path = os.path.join(build_bin_dir, 'rocmlir-gen')
     rocmlir_driver_path = os.path.join(build_bin_dir, 'rocmlir-driver')
-    rocmlir_translate_path = os.path.join(build_bin_dir, 'rocmlir-translate')
-    opt_path = os.path.join(build_external_bin_dir, 'opt')
-    llc_path = os.path.join(build_external_bin_dir, 'llc')
 
     # Check if build/bin directory exists
     if not os.path.exists(build_bin_dir):
@@ -84,29 +90,10 @@ def check_rocmlir_binaries():
         print(f"Error: rocmlir-driver not found at {rocmlir_driver_path}")
         sys.exit(1)
 
-    # Check for rocmlir-translate
-    if not os.path.exists(rocmlir_translate_path):
-        print(f"Error: rocmlir-translate not found at {rocmlir_translate_path}")
-        sys.exit(1)
-
-    # Check for opt
-    if not os.path.exists(opt_path):
-        print(f"Error: opt not found at {opt_path}")
-        sys.exit(1)
-
-    # Check for llc
-    if not os.path.exists(llc_path):
-        print(f"Error: llc not found at {llc_path}")
-        sys.exit(1)
-
     print(f"✓ Found rocmlir-gen: {rocmlir_gen_path}")
     print(f"✓ Found rocmlir-driver: {rocmlir_driver_path}")
-    print(f"✓ Found rocmlir-translate: {rocmlir_translate_path}")
-    print(f"✓ Found opt: {opt_path}")
-    print(f"✓ Found llc: {llc_path}")
 
-    return [rocmlir_gen_path, rocmlir_driver_path, rocmlir_translate_path,
-           opt_path, llc_path]
+    return [rocmlir_gen_path, rocmlir_driver_path]
 
 def parse_config_csv(config_file):
     """Parse the input CSV file containing configuration data."""
@@ -114,36 +101,17 @@ def parse_config_csv(config_file):
 
     try:
         with open(config_file, 'r') as csvfile:
-            # Read the content and process manually
-            lines = csvfile.readlines()
+            # Use csv.DictReader with tab delimiter
+            reader = csv.DictReader(csvfile, delimiter='\t')
             
-            if not lines:
-                return configs
-            
-            # Parse header
-            header_line = lines[0].strip()
-            headers = [h.strip() for h in header_line.split('\t')]
-            
-            # Process each data line
-            for line in lines[1:]:
-                line = line.strip()
-                if not line:
-                    continue
+            # Process each row
+            for row in reader:
+                # Strip whitespace from all values
+                clean_row = {key.strip(): value.strip() for key,
+                                          value in row.items()}
                 
-                # Split by tabs (not commas, since commas are within the
-                # perfConfig field)
-                values = line.split('\t')
-                
-                # Create dictionary for this row
-                clean_row = {}
-                for i, header in enumerate(headers):
-                    if i < len(values):
-                        value = values[i].strip()
-                        clean_row[header] = value
-                    else:
-                        clean_row[header] = ""
-                
-                if clean_row:  # Only add non-empty rows
+                # Only add non-empty rows (check if any value is non-empty)
+                if any(clean_row.values()):
                     configs.append(clean_row)
         
         return configs
@@ -323,39 +291,14 @@ def compile_config(config, operation, binaries, timestamp):
     # Build the rocmlir-driver command
     rocmlir_driver_cmd = [
         binaries[1],
-        "-kernel-pipeline=gpu,rocdl",
-        "--arch={arch}",
-        "--debug-only=convert-rock-to-gpu",
+        "-c",
+        f"--arch={arch}",
+        "--debug-only=convert-rock-to-gpu,serialize-to-isa",
         f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
         "-o", f"rocmlir-driver-output-{arch}-{timestamp}.mlir"
     ]
 
-    # Build the rocmlir-translate command
-    rocmlir_translate_cmd = [
-        binaries[2],
-        "-gpu-module-to-rocdlir",
-        "-allow-unregistered-dialect",
-        f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
-        "-o", f"rocmlir-translate-output-{arch}-{timestamp}.ll"
-    ]
-
-    # Build the opt command
-    opt_cmd = [
-        binaries[3],
-        "-O3",
-        f"rocmlir-translate-output-{arch}-{timestamp}.ll",
-        "-o", f"rocmlir-opt-output-{arch}-{timestamp}.bc"
-    ]
-
-    # Build the llc command
-    llc_cmd = [
-        binaries[4],
-        f"-mcpu={arch}",
-        f"rocmlir-opt-output-{arch}-{timestamp}.bc"
-    ]
-
-    commands = [rocmlir_gen_cmd, rocmlir_driver_cmd, rocmlir_translate_cmd,
-                opt_cmd, llc_cmd]
+    commands = [rocmlir_gen_cmd, rocmlir_driver_cmd]
 
     # Execute commands sequentially
     try:
@@ -386,48 +329,11 @@ def compile_config(config, operation, binaries, timestamp):
         f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
         f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
         f"rocmlir-driver-debug-{arch}-{timestamp}.txt",
-        f"rocmlir-translate-output-{arch}-{timestamp}.ll",
-        f"rocmlir-opt-output-{arch}-{timestamp}.bc",
-        f"rocmlir-opt-output-{arch}-{timestamp}.s"
     ]
 
-def parse_llc_results(tuning_data, llc_file):
-    # Parse the LLC assembly file for SGPR and VGPR information
-    if os.path.exists(llc_file):
-        try:
-            with open(llc_file, 'r') as f:
-                content = f.read()
-                
-                # Look for SGPR count
-                sgpr_match = re.search(r'\.sgpr_count:\s+(\d+)', content)
-                if sgpr_match:
-                    tuning_data['sgpr_count'] = int(sgpr_match.group(1))
-                
-                # Look for VGPR count
-                vgpr_match = re.search(r'\.vgpr_count:\s+(\d+)', content)
-                if vgpr_match:
-                    tuning_data['vgpr_count'] = int(vgpr_match.group(1))
-                
-                # Look for SGPR spill count
-                sgpr_spill_match = re.search(r'\.sgpr_spill_count:\s+(\d+)',
-                                             content)
-                if sgpr_spill_match:
-                    tuning_data['sgpr_spills'] = int(sgpr_spill_match.group(1))
-                
-                # Look for VGPR spill count
-                vgpr_spill_match = re.search(r'\.vgpr_spill_count:\s+(\d+)',
-                                             content)
-                if vgpr_spill_match:
-                    tuning_data['vgpr_spills'] = int(vgpr_spill_match.group(1))
-                
-        except Exception as e:
-            print(f"Error parsing LLC file {llc_file}: {e}")
-    else:
-        print(f"Warning: LLC file {llc_file} not found")
-
 def parse_driver_debug_results(tuning_data, dbg_message_file):
-    # Parse the rocmlir-driver debug output file for gridsize, blocksize, and
-    # lds usage information
+    # Parse the rocmlir-driver debug output file for gridsize, blocksize,
+    # lds usage, SGPR, and VGPR information
     if os.path.exists(dbg_message_file):
         try:
             with open(dbg_message_file, 'r') as f:
@@ -436,17 +342,39 @@ def parse_driver_debug_results(tuning_data, dbg_message_file):
                 # Look for blocksize
                 blocksize_match = re.search(r'blockSize:\s*(\d+)', content)
                 if blocksize_match:
-                    tuning_data['blocksize'] = int(blocksize_match.group(1))
+                    tuning_data.blocksize = int(blocksize_match.group(1))
 
                 # Look for gridsize
                 gridsize_match = re.search(r'gridSize:\s*(\d+)', content)
                 if gridsize_match:
-                    tuning_data['gridsize'] = int(gridsize_match.group(1))
+                    tuning_data.gridsize = int(gridsize_match.group(1))
 
                 # Look for LDS_allocated
                 lds_match = re.search(r'ldsUsage:\s*(\d+)', content)
                 if lds_match:
-                    tuning_data['LDS_allocated'] = int(lds_match.group(1))
+                    tuning_data.LDS_allocated = int(lds_match.group(1))
+
+                # Look for SGPR count
+                sgpr_match = re.search(r'\.sgpr_count:\s+(\d+)', content)
+                if sgpr_match:
+                    tuning_data.sgpr_count = int(sgpr_match.group(1))
+                
+                # Look for VGPR count
+                vgpr_match = re.search(r'\.vgpr_count:\s+(\d+)', content)
+                if vgpr_match:
+                    tuning_data.vgpr_count = int(vgpr_match.group(1))
+                
+                # Look for SGPR spill count
+                sgpr_spill_match = re.search(r'\.sgpr_spill_count:\s+(\d+)',
+                                             content)
+                if sgpr_spill_match:
+                    tuning_data.sgpr_spills = int(sgpr_spill_match.group(1))
+                
+                # Look for VGPR spill count
+                vgpr_spill_match = re.search(r'\.vgpr_spill_count:\s+(\d+)',
+                                             content)
+                if vgpr_spill_match:
+                    tuning_data.vgpr_spills = int(vgpr_spill_match.group(1))
                 
         except Exception as e:
             print(f"Error parsing DBG file {dbg_message_file}: {e}")
@@ -466,9 +394,6 @@ def parse_results(gen_files):
       - rocmlir-llc output  
     """
     tuning_data = create_tuning_data()
-
-    llc_file = gen_files[-1]
-    parse_llc_results(tuning_data, llc_file)
 
     dbg_message_file = gen_files[2]
     parse_driver_debug_results(tuning_data, dbg_message_file)
@@ -673,9 +598,8 @@ def compile_and_collect_data(config, operation, binaries):
     # Calculate occupancy using the method in testing_metrics.py
     [M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor] = \
                                     gatherOccupancyParameters(config, operation)
-    results['occupancy'] = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
-                                              MNPerWave, minNumWaves,
-                                              splitKFactor)
+    results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
+                                           MNPerWave, minNumWaves, splitKFactor)
 
     # Clean up temporary files
     for temp_file in gen_files:
@@ -727,20 +651,23 @@ def write_results_to_csv(results, configs):
             writer.writeheader()
             
             # Write each result row
-            for i, (config, result) in enumerate(zip(configs, results)):
+            for (config, result) in zip(configs, results):
+                # Convert TuningData object to a dictionary
+                result_dict = result.to_dict()
+
                 row = {
                     'arch': config.get("# arch", ""),
                     'numCUs': config.get("numCUs", ""),
                     'testVector': config.get("testVector", ""),
                     'perfConfig': config.get("perfConfig (exhaustive)", ""),
-                    'blocksize': result.get('blocksize', ''),
-                    'gridsize': result.get('gridsize', ''),
-                    'vgpr_count': result.get('vgpr_count', ''),
-                    'vgpr_spills': result.get('vgpr_spills', ''),
-                    'sgpr_count': result.get('sgpr_count', ''),
-                    'sgpr_spills': result.get('sgpr_spills', ''),
-                    'LDS_allocated': result.get('LDS_allocated', ''),
-                    'occupancy': result.get('occupancy', '')
+                    'blocksize': result_dict.get('blocksize', ''),
+                    'gridsize': result_dict.get('gridsize', ''),
+                    'vgpr_count': result_dict.get('vgpr_count', ''),
+                    'vgpr_spills': result_dict.get('vgpr_spills', ''),
+                    'sgpr_count': result_dict.get('sgpr_count', ''),
+                    'sgpr_spills': result_dict.get('sgpr_spills', ''),
+                    'LDS_allocated': result_dict.get('LDS_allocated', ''),
+                    'occupancy': result_dict.get('occupancy', '')
                 }
                 writer.writerow(row)
         
