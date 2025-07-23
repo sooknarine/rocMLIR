@@ -267,7 +267,8 @@ def compile_config(config, operation, binaries, timestamp):
 
     # If operation is a convolution, we need to convert the test_args to a
     # format that rocmlir-gen can understand
-    if operation.lower() == 'conv':
+    if operation.lower() in ['conv', 'convfp16', 'convbfp16', 'convint8',
+                             'convfp8']:
         [test_args, operation] = convertConvTestArgs(test_args, operation)
 
     # Build the rocmlir-gen command
@@ -541,7 +542,8 @@ def extract_MNG_from_config(config, operation):
             N = int(arg_dict.get('-n', 0))
             G = int(arg_dict.get('-g', 0))
             
-        elif operation.lower() in ['conv2d', 'conv']:
+        elif operation.lower() in ['conv', 'convfp16', 'convbfp16', 'convint8',
+                                   'convfp8']:
             # For conv ops: M = k, N = calculateConvN, G = g
             M = int(arg_dict.get('-k', 0))
             N = calculateConvN(arg_dict)
