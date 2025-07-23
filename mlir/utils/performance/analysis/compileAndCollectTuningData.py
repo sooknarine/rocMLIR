@@ -8,11 +8,11 @@ points for each config:
 - LDS allocated
 - Occupancy
 
-The given config is expected to be a csv with the following format:
+The given config is expected to be a tsv with the following format:
 |# arch| numCUs | testVector | perfConfig (exhaustive) |
 
 Usage:
-    python3 compileAndCollectTuningData.py --op <operation> <config.csv>
+    python3 compileAndCollectTuningData.py --op <operation> <config.tsv>
 """
 
 import argparse
@@ -46,7 +46,7 @@ class TuningData:
         self.occupancy = None
     
     def to_dict(self):
-        """Convert to dictionary format for CSV writing."""
+        """Convert to dictionary format for tsv writing."""
         return {
             'blocksize': self.blocksize,
             'gridsize': self.gridsize,
@@ -95,14 +95,14 @@ def check_rocmlir_binaries():
 
     return [rocmlir_gen_path, rocmlir_driver_path]
 
-def parse_config_csv(config_file):
-    """Parse the input CSV file containing configuration data."""
+def parse_config_tsv(config_file):
+    """Parse the input tuning database file containing configuration data."""
     configs = []
 
     try:
-        with open(config_file, 'r') as csvfile:
+        with open(config_file, 'r') as tsvfile:
             # Use csv.DictReader with tab delimiter
-            reader = csv.DictReader(csvfile, delimiter='\t')
+            reader = csv.DictReader(tsvfile, delimiter='\t')
             
             # Process each row
             for row in reader:
@@ -611,20 +611,20 @@ def compile_and_collect_data(config, operation, binaries):
 
     return results
 
-def write_results_to_csv(results, configs):
+def write_results_to_tsv(results, configs):
     """
-    Write the collected tuning data results to a CSV file.
+    Write the collected tuning data results to a tsv file.
     
     Args:
         results: List of tuning data dictionaries
         configs: List of original configuration dictionaries
-        output_file: Path to the output CSV file
+        output_file: Path to the output tsv file
     """
     if not results:
         print("No results to write")
         return
     
-    # Define the fieldnames for the CSV
+    # Define the fieldnames for the tsv
     fieldnames = [
         'arch',
         'numCUs',
@@ -641,11 +641,11 @@ def write_results_to_csv(results, configs):
     ]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"tuning_results_{timestamp}.csv"
+    output_file = f"tuning_results_{timestamp}.tsv"
     
     try:
-        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        with open(output_file, 'w', newline='', encoding='utf-8') as tsvfile:
+            writer = csv.DictWriter(tsvfile, fieldnames=fieldnames)
             
             # Write the header
             writer.writeheader()
@@ -671,10 +671,10 @@ def write_results_to_csv(results, configs):
                 }
                 writer.writerow(row)
         
-        print(f"Results written to {output_file}")
+        print(f"\nResults written to {output_file}")
         
     except Exception as e:
-        print(f"Error writing results to CSV: {e}")
+        print(f"\nError writing results to tsv: {e}")
 
 def print_progress(current, total):
     """Print a progress bar to stdout."""
@@ -695,8 +695,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('--op', required=True,
-                        help='Operation to perform (e.g., "compile")')
-    parser.add_argument('config_csv', help='Path to the configuration CSV file')
+                        help='Operation to perform (e.g., "compile")',
+                        choices=['conv', 'gemm', 'attention'])
+    parser.add_argument('config_tsv', help='Path to the tuning database file')
     
     args = parser.parse_args()
 
@@ -704,7 +705,7 @@ def main():
     binaries = check_rocmlir_binaries()
 
     # Parse the configuration file
-    configs = parse_config_csv(args.config_csv)
+    configs = parse_config_tsv(args.config_tsv)
     print(f"Found {len(configs)} configurations to process")
     
     # Process each configuration
@@ -715,8 +716,8 @@ def main():
         metrics = compile_and_collect_data(config, args.op, binaries)
         results.append(metrics)
     
-    #Write the results to a final CSV file
-    write_results_to_csv(results, configs)
+    #Write the results to a final tsv file
+    write_results_to_tsv(results, configs)
 
 if __name__ == "__main__":
     main()
