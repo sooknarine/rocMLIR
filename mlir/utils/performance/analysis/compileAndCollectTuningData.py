@@ -18,6 +18,7 @@ Usage:
 import argparse
 import csv
 import os
+import perfRunner
 import re
 import shutil
 import subprocess
@@ -95,200 +96,40 @@ def check_rocmlir_binaries():
 
     return [rocmlir_gen_path, rocmlir_driver_path]
 
-def parse_config_tsv(config_file):
-    """Parse the input tuning database file containing configuration data."""
-    configs = []
-
-    try:
-        with open(config_file, 'r') as tsvfile:
-            # Use csv.DictReader with tab delimiter
-            reader = csv.DictReader(tsvfile, delimiter='\t')
-            
-            # Process each row
-            for row in reader:
-                # Strip whitespace from all values
-                clean_row = {key.strip(): value.strip() for key,
-                                          value in row.items()}
-                
-                # Only add non-empty rows (check if any value is non-empty)
-                if any(clean_row.values()):
-                    configs.append(clean_row)
-        
-        return configs
-        
-    except FileNotFoundError:
-        print(f"Error: Config file '{config_file}' not found.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading config file: {e}")
-        sys.exit(1)
-
-def parse_test_args(test_vector):
+def get_perf_config(operation, test_vector, arch, num_cu):
     """
-    Parse test vector arguments to handle boolean flags.
-    For patterns like '-flag', 'false' - remove both
-    For patterns like '-flag', 'true' - keep only the flag
-    For other patterns - keep as is
-    """
-    args = test_vector.split()
-    parsed_args = []
-    i = 0
-
-    while i < len(args):
-        current_arg = args[i]
-
-        # Check if this is a flag (starts with '-') and has a next argument
-        if current_arg.startswith('-') and i + 1 < len(args):
-            next_arg = args[i + 1]
-
-            # Check if the next argument is a boolean value
-            if next_arg.lower() in ['true', 'false']:
-                # Only include the flag if the value is 'true'
-                if next_arg.lower() == 'true':
-                    parsed_args.append(current_arg)
-                # Skip both the flag and the boolean value
-                i += 2
-            else:
-                # Not a boolean flag, keep both arguments
-                parsed_args.append(current_arg)
-                parsed_args.append(next_arg)
-                i += 2
-        else:
-            # Single argument or last argument, keep as is
-            parsed_args.append(current_arg)
-            i += 1
-
-    return parsed_args
-
-def convertConvTestArgs(test_args, operation):
-    """
-    Convert test arguments for convolution operations to the format expected
-    by rocmlir-gen.
+    Get the performance configuration for the given test vector, architecture,
+    and number of compute units.
     
     Args:
-        test_args: List of test arguments parsed from the test vector.
+        test_vector: The test vector string.
+        arch: The architecture string.
+        num_cu: The number of compute units.
     
     Returns:
-        List of converted test arguments.
+        str: The performance configuration string.
     """
-    # Build converted arguments list
-    converted_args = []
-    
-    # Process arguments in pairs
-    i = 0
-    while i < len(test_args):
-        if i == 0:
-            # The first argument contains the operation type
-            dataType = None
-            if test_args[0] == 'conv':
-                dataType = 'f32'
-            elif test_args[0] == 'convfp16':
-                dataType = 'f16'
-            elif test_args[0] == 'convbfp16':
-                dataType = 'bf16'
-            elif test_args[0] == 'convint8':
-                dataType = 'i8'
-            elif test_args[0] == 'convfp8_fp8':
-                dataType = 'fp8_fp8'
-            elif test_args[0] == 'convfp8':
-                dataType = 'fp8'
-            elif test_args[0] == 'convfp8_bf8':
-                dataType = 'fp8_bf8'
-            elif test_args[0] == 'convbf8_fp8':
-                dataType = 'bf8_fp8'
-            elif test_args[0] == 'convbf8_bf8':
-                dataType = 'bf8_bf8'
-            converted_args.extend(["-t", dataType])
-            i += 1
-            continue
+    conf_class = perfRunner.PerfConfiguration
+    if (operation == 'attention'):
+        conf_class = perfRunner.AttentionConfiguration.fromCommandLine(test_vector.split(sep=' '), arch, num_cu)
+    elif (operation == 'gemm'):
+        conf_class = perfRunner.GemmConfiguration.fromCommandLine(test_vector.split(sep=' '), arch, num_cu)
+    elif (operation == 'conv'):
+        conf_class = perfRunner.ConvConfiguration.fromCommandLine(test_vector.split(sep=' '), arch, num_cu)
 
-        if i + 1 < len(test_args):
-            opt = test_args[i]
-            val = test_args[i + 1]
-            
-            # Map short form arguments to rocmlir-gen long form
-            if opt == "-n":
-                converted_args.extend(["--batchsize", val])
-            elif opt == "-c":
-                converted_args.extend(["--in_channels", val])
-            elif opt == "-H":
-                converted_args.extend(["--in_h", val])
-            elif opt == "-W":
-                converted_args.extend(["--in_w", val])
-            elif opt == "-k":
-                converted_args.extend(["--out_channels", val])
-            elif opt == "-y":
-                converted_args.extend(["--fil_h", val])
-            elif opt == "-x":
-                converted_args.extend(["--fil_w", val])
-            elif opt == "-p":
-                converted_args.extend(["--padding_h", val])
-            elif opt == "-q":
-                converted_args.extend(["--padding_w", val])
-            elif opt == "-u":
-                converted_args.extend(["--conv_stride_h", val])
-            elif opt == "-v":
-                converted_args.extend(["--conv_stride_w", val])
-            elif opt == "-l":
-                converted_args.extend(["--dilation_h", val])
-            elif opt == "-j":
-                converted_args.extend(["--dilation_w", val])
-            elif opt == "-g":
-                converted_args.extend(["-g", val])
-            elif opt == "-f":
-                converted_args.extend(["--fil_layout", val.lower()])
-            elif opt == "-I":
-                converted_args.extend(["--in_layout", val.lower()])
-            elif opt == "-O":
-                converted_args.extend(["--out_layout", val.lower()])
-            elif opt == "-F":
-                # Convert direction flag to operation
-                direction_val = int(val)
-                if direction_val == 1:
-                    operation = "conv"
-                elif direction_val == 2:
-                    operation = "conv_bwd_data"
-                elif direction_val == 4:
-                    operation = "conv_bwd_weight"
-            else:
-                # Unknown argument, do not add
-                pass
-            i += 2
-    
-    return [converted_args, operation]
+    return conf_class
 
-def compile_config(config, operation, binaries, timestamp):
-    arch = config["# arch"].split(':')[0]
-    num_cu = config["numCUs"]
-    success = True
+def compile_config(config, perf_config, operation, binaries, timestamp):
+    arch = config[0].split(':')[0]
+    num_cu = config[1]
+    test_vector = config[2]
 
-    # Parse and add the test vector arguments
-    test_vector = config["testVector"]
-    test_args = parse_test_args(test_vector)
-
-    # If operation is a convolution, we need to convert the test_args to a
-    # format that rocmlir-gen can understand
-    if operation.lower() in ['conv', 'convfp16', 'convbfp16', 'convint8',
-                             'convfp8']:
-        [test_args, operation] = convertConvTestArgs(test_args, operation)
+    conf_class = get_perf_config(operation, test_vector, arch, num_cu)
+    conf_class.setPerfConfig(perf_config)
+    rocmlir_gen_options = conf_class.generateMlirDriverCommandLine("")
 
     # Build the rocmlir-gen command
-    rocmlir_gen_cmd = [
-        binaries[0],
-        "--operation", operation,
-        "--arch", arch,
-        "--num_cu", num_cu,
-    ]
-    
-    rocmlir_gen_cmd.extend(test_args)
-
-    # Add perf_config
-    rocmlir_gen_cmd.extend(["--perf_config",
-                            config["perfConfig (exhaustive)"]])
-    
-    # Add output file
-    rocmlir_gen_cmd.extend(["-o",
-                            f"rocmlir-gen-output-{arch}-{timestamp}.mlir"])
+    rocmlir_gen_cmd = [binaries[0]] + rocmlir_gen_options.split()
 
     # Build the rocmlir-driver command
     rocmlir_driver_cmd = [
@@ -296,42 +137,20 @@ def compile_config(config, operation, binaries, timestamp):
         "-c",
         f"--arch={arch}",
         "--debug-only=convert-rock-to-gpu,serialize-to-isa",
-        f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
-        "-o", f"rocmlir-driver-output-{arch}-{timestamp}.mlir"
     ]
 
     commands = [rocmlir_gen_cmd, rocmlir_driver_cmd]
+    out, err = perfRunner.runPipeline(commands)
 
-    # Execute commands sequentially
-    try:
-        for i, cmd in enumerate(commands):
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-
-            # We want to write the output from the rocmlir-driver command
-            # to a text file so that we can save the debug output
-            if i == 1:
-                # Write debug output to file
-                debug_file = f"rocmlir-driver-debug-{arch}-{timestamp}.txt"
-                with open(debug_file, 'w') as f:
-                    f.write(result.stderr)
-
-
-    except subprocess.CalledProcessError as e:
-        print(f"\nCommand failed: {' '.join(e.cmd)}")
-        print(f"Return code: {e.returncode}")
-        print(f"Error output: {e.stderr}")
-        success = False
+    # Write debug output to file
+    debug_file = f"rocmlir-driver-debug-{arch}-{timestamp}.txt"
+    with open(debug_file, 'w') as f:
+        if isinstance(err, bytes):
+            f.write(err.decode('utf-8'))
+        else:
+            f.write(err if err else "")
     
-    return ([
-        f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
-        f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
-        f"rocmlir-driver-debug-{arch}-{timestamp}.txt",
-    ], success)
+    return f"rocmlir-driver-debug-{arch}-{timestamp}.txt"
 
 def parse_driver_debug_results(tuning_data, dbg_message_file):
     # Parse the rocmlir-driver debug output file for gridsize, blocksize,
@@ -340,7 +159,6 @@ def parse_driver_debug_results(tuning_data, dbg_message_file):
         try:
             with open(dbg_message_file, 'r') as f:
                 content = f.read()
-                
                 # Look for blocksize
                 blocksize_match = re.search(r'blockSize:\s*(\d+)', content)
                 if blocksize_match:
@@ -383,7 +201,7 @@ def parse_driver_debug_results(tuning_data, dbg_message_file):
     else:
         print(f"Warning: DBG file {dbg_message_file} not found")
 
-def parse_results(gen_files):
+def parse_results(debug_output):
     """
     This function parses the generated files to gather the desired information.
     gen_files will contain all of the output files from the different stages
@@ -396,9 +214,7 @@ def parse_results(gen_files):
       - rocmlir-llc output  
     """
     tuning_data = create_tuning_data()
-
-    dbg_message_file = gen_files[2]
-    parse_driver_debug_results(tuning_data, dbg_message_file)
+    parse_driver_debug_results(tuning_data, debug_output)
 
     return tuning_data
     
@@ -421,7 +237,8 @@ def parse_perf_config(perf_config, num_cu):
         # For attention ops: operation:version:parameters
         # For gemm/conv ops: version:parameters
         if len(parts) >= 3:
-            # Attention format - extract the parameters part (everything after the second ':')
+            # Attention format - extract the parameters part (everything after
+            # the second ':')
             params_str = parts[2]
         else:
             # GEMM/conv format - parameters are after the first ':'
@@ -496,32 +313,31 @@ def calculateConvN(arg_dict):
 
     return N
     
-def extract_MNG_from_config(config, operation):
+def extract_MNG_from_config(config, test_args, operation):
     """
     Extract M, N, and G values from the testVector based on the operation type.
     
     Args:
         config: Configuration dictionary containing testVector
+        test_args: Filtered list of arguments from the testVector
         operation: Operation type (e.g., 'attention', 'gemm', 'conv2d')
     
     Returns:
         tuple: (M, N, G) values based on operation type
     """
-    test_vector = config["testVector"]
-    test_args = parse_test_args(test_vector)
-    
+    args = test_args.split()
     # Create a dictionary of arguments for easier lookup
     arg_dict = {}
     i = 0
-    while i < len(test_args):
-        if test_args[i].startswith('-') and i + 1 < len(test_args):
+    while i < len(args):
+        if args[i].startswith('-') and i + 1 < len(args):
             # Check if next arg is a value (not another flag)
-            if not test_args[i + 1].startswith('-'):
-                arg_dict[test_args[i]] = test_args[i + 1]
+            if not args[i + 1].startswith('-'):
+                arg_dict[args[i]] = args[i + 1]
                 i += 2
             else:
                 # Flag without value
-                arg_dict[test_args[i]] = True
+                arg_dict[args[i]] = True
                 i += 1
         else:
             i += 1
@@ -562,20 +378,19 @@ def extract_MNG_from_config(config, operation):
     
     return M, N, G
 
-def gatherOccupancyParameters(config, operation):
+def gatherOccupancyParameters(config, perf_config, test_args, operation):
     '''
     This function gathers all of the parameters that are needed to calculate
     the theoretical occupancy
     '''
-    perf_config = config["perfConfig (exhaustive)"]
-    num_cu = config["numCUs"]
+    num_cu = config[1]
     parsed_params = parse_perf_config(perf_config, num_cu)
     
     if parsed_params is None:
         return [None] * 8  # Return None values if parsing fails
     
     # Extract the required parameters for occupancy calculation
-    [M, N, G] = extract_MNG_from_config(config, operation)
+    [M, N, G] = extract_MNG_from_config(config, test_args, operation)
     
     MPerBlock = int(parsed_params['MPerBlock'])
     NPerBlock = int(parsed_params['NPerBlock'])
@@ -585,7 +400,8 @@ def gatherOccupancyParameters(config, operation):
 
     return [M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor]
 
-def compile_and_collect_data(config, operation, binaries):
+def compile_and_collect_data(config, perf_config, test_args, operation,
+                             binaries):
     """
     Compile and collect the resulting data points that we are interested in
     """
@@ -593,29 +409,29 @@ def compile_and_collect_data(config, operation, binaries):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Compile the config
-    (gen_files, success) = compile_config(config, operation, binaries,
-                                          timestamp)
+    debug_output = compile_config(config, perf_config, operation, binaries,
+                                  timestamp)
 
-    results = None
-    if success:
-        # Parse the results from the compiled config
-        results = parse_results(gen_files)
+    # Parse the results from the compiled config
+    results = parse_results(debug_output)
 
-        # Calculate occupancy using the method in testing_metrics.py
-        [M, N, G, MPerBlock, NPerBlock,
-         MNPerWave, minNumWaves, splitKFactor] = \
-                                    gatherOccupancyParameters(config, operation)
-        results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
-                                               MNPerWave, minNumWaves,
-                                               splitKFactor)
+    # Calculate occupancy using the method in testing_metrics.py
+    [M, N, G, MPerBlock, NPerBlock,
+        MNPerWave, minNumWaves, splitKFactor] = \
+                                gatherOccupancyParameters(config,
+                                                            perf_config,
+                                                            test_args,
+                                                            operation)
+    results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
+                                            MNPerWave, minNumWaves,
+                                            splitKFactor)
 
-    # Clean up temporary files
-    for temp_file in gen_files:
-        try:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-        except Exception as e:
-            print(f"  Warning: Could not remove {temp_file}: {e}")
+    # Clean up temporary debug file
+    try:
+        if os.path.exists(debug_output):
+            os.remove(debug_output)
+    except Exception as e:
+        print(f"  Warning: Could not remove {debug_output}: {e}")
 
     return results
 
@@ -730,17 +546,28 @@ def main():
     binaries = check_rocmlir_binaries()
 
     # Parse the configuration file
-    configs = parse_config_tsv(args.config_tsv)
+    configs = perfRunner.read_tuning_db(args.config_tsv, True)
+    op_configs = None
+    if (args.op == 'conv'):
+        op_configs = perfRunner.getConvConfigurations(args.config_tsv)
+    elif (args.op == 'gemm'):
+        op_configs = perfRunner.getGemmConfigurations(args.config_tsv)
+    elif (args.op == 'attention'):
+        op_configs = perfRunner.getAttentionConfigurations(args.config_tsv)
+    else:
+        print(f"Error: Unknown operation '{args.op}'")
+        sys.exit(1)
     print(f"Found {len(configs)} configurations to process")
     
     # Process each configuration
     results = []
     total_configs = len(configs)
-    for i, config in enumerate(configs):
+    for i, (config, test_args) in enumerate(zip(configs, op_configs)):
         print_progress(i, total_configs)
-        metrics = compile_and_collect_data(config, args.op, binaries)
+        metrics = compile_and_collect_data(config, configs[config], test_args,
+                                           args.op, binaries)
         results.append(metrics)
-    
+
     #Write the results to a final tsv file
     write_results_to_tsv(results, configs)
 

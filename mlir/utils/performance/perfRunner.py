@@ -15,7 +15,7 @@ import argparse
 import re
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, Union
 import numpy as np
 import pandas as pd
 from hip import hip
@@ -237,7 +237,8 @@ def getBankConflict(fileName):
 
 # Tuning databases
 MaybeTuningDb = Optional[Dict[Tuple[str, str], str]]
-def read_tuning_db(path: Optional[str]) -> MaybeTuningDb:
+MaybeTuningDbWithCU = Optional[Dict[Tuple[str, str, str], str]]
+def read_tuning_db(path: Optional[str], include_num_cu: bool = False) -> Union[MaybeTuningDb, MaybeTuningDbWithCU]:
     try:
         ret = {}
         with open(path, 'r') as dbFile:
@@ -253,12 +254,18 @@ def read_tuning_db(path: Optional[str]) -> MaybeTuningDb:
                     ret[arch, config] = perfConfig
                 # note: new format has 4 entries
                 elif len(entries) == 4:
-                    arch, _, config, perfConfig = entries
-                    ret[arch, config] = perfConfig
+                    arch, num_cu, config, perfConfig = entries
+                    if (include_num_cu):
+                        ret[arch, num_cu, config] = perfConfig
+                    else:
+                        ret[arch, config] = perfConfig
                 # note: 5-entry form includes tflops at end
                 elif len(entries) == 5:
-                    arch, _, config, perfConfig, _ = entries
-                    ret[arch, config] = perfConfig
+                    arch, num_cu, config, perfConfig, _ = entries
+                    if (include_num_cu):
+                        ret[arch, num_cu, config] = perfConfig
+                    else:
+                        ret[arch, config] = perfConfig
                 else:
                     print("Warning: Malformed tuning database entry:", line)
                     continue
