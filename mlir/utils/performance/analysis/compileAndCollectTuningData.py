@@ -7,6 +7,8 @@ points for each config:
 - sgpr
 - LDS allocated
 - Occupancy
+- WFsPerWG
+- mfma_wmma_instruction
 
 The given config is expected to be a tsv with the following format:
 |# arch| numCUs | testVector | perfConfig (exhaustive) |
