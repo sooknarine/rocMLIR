@@ -248,8 +248,9 @@ def parse_perf_config(perf_config, num_cu):
     
 def calculateConvN(arg_dict):
     """
-    This function calculate the N value for convolution operations based on
-    the provided arguments in the test vector.
+    This function calculate the total number of output elements/pixels
+    for convolution operations based on the provided arguments in the test
+    vector.
 
     Note: Right now we are working under the assumption that we will only ever
     # need to calculate the N value for forward convolutions based on the
@@ -257,6 +258,8 @@ def calculateConvN(arg_dict):
     # to update this function to handle calculations for different types of
     # backwards convolutions.
     """
+    assert int(arg_dict.get('-F')) == 1, \
+           "Only forward convolution (-F=1) is supported"
     # Forward convolution: N = batch_size * output_height * output_width
     # This is based off of the calculation that is done in TosaToLinalgNamed
     batch_size = int(arg_dict.get('-n', 1))
@@ -324,7 +327,7 @@ def extract_MNG_from_config(config, test_args, operation):
             # For attention ops: M = seq_len_q, N = seq_len_k, G = g
             M = int(arg_dict.get('-seq_len_q', 0))
             N = int(arg_dict.get('-seq_len_k', 0))
-            G = int(arg_dict.get('-g', 0))
+            G = int(arg_dict.get('-g', 0)) * int(arg_dict.get('-num_heads_q', 0)) 
             
         elif operation.lower() in ['gemm']:
             # For GEMM ops: M = m, N = n, G = g
@@ -392,9 +395,9 @@ def compile_and_collect_data(config, perf_config, test_args, operation,
     [M, N, G, MPerBlock, NPerBlock,
         MNPerWave, minNumWaves, splitKFactor] = \
                                 gatherOccupancyParameters(config,
-                                                            perf_config,
-                                                            test_args,
-                                                            operation)
+                                                          perf_config,
+                                                          test_args,
+                                                          operation)
     results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
                                             MNPerWave, minNumWaves,
                                             splitKFactor)
@@ -449,12 +452,13 @@ def write_results_to_tsv(results, configs):
             
             # Write each result row
             for (config, result) in zip(configs, results):
+                arch, num_cu, test_vector = config
                 if result is None:
                     row = {
-                        'arch': config.get("# arch", ""),
-                        'numCUs': config.get("numCUs", ""),
-                        'testVector': config.get("testVector", ""),
-                        'perfConfig': config.get("perfConfig (exhaustive)", ""),
+                        'arch': arch,
+                        'numCUs': num_cu,
+                        'testVector': test_vector,
+                        'perfConfig': configs[config],
                         'blocksize': None,
                         'gridsize': None,
                         'vgpr_count': None,
@@ -469,10 +473,10 @@ def write_results_to_tsv(results, configs):
                     result_dict = result.to_dict()
 
                     row = {
-                        'arch': config.get("# arch", ""),
-                        'numCUs': config.get("numCUs", ""),
-                        'testVector': config.get("testVector", ""),
-                        'perfConfig': config.get("perfConfig (exhaustive)", ""),
+                        'arch': arch,
+                        'numCUs': num_cu,
+                        'testVector': test_vector,
+                        'perfConfig': configs[config],
                         'blocksize': result_dict.get('blocksize', ''),
                         'gridsize': result_dict.get('gridsize', ''),
                         'vgpr_count': result_dict.get('vgpr_count', ''),
@@ -542,8 +546,7 @@ def main():
         metrics = compile_and_collect_data(config, configs[config], test_args,
                                            args.op, paths)
         results.append(metrics)
-        break
-    print(results[0].to_dict())
+
     #Write the results to a final tsv file
     write_results_to_tsv(results, configs)
 

@@ -289,11 +289,16 @@ def runPipeline(proc_specs):
         po = subprocess.Popen(proc, stdin=prev_stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         procs.append(po)
     try:
-        for p in procs:
+        for p in procs[:-1]:
             p.wait()
             if p.returncode != 0:
                 raise OSError(str(p.stderr))
-        outs, errs = p.communicate()
+
+        # Wait for the last process to finish and collect its output
+        outs, errs = procs[-1].communicate()
+        if procs[-1].returncode != 0:
+            raise OSError(str(errs))
+
         return outs, errs
     except Exception as err:
         print(f"Error:  {err}")
