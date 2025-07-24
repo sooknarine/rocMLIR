@@ -62,40 +62,6 @@ class TuningData:
 def create_tuning_data():
     return TuningData()
 
-def check_rocmlir_binaries():
-    """
-    Check if rocmlir-gen and rocmlir-driver binaries can be found.
-    Returns the paths to the binaries if found, otherwise exits.
-    """
-
-    # Define expected binary paths. This scripts expects that all of the
-    # scripts have already been built (using ninja ci-performance-scripts) and
-    # are located in the build/bin directory
-    build_bin_dir = os.path.dirname(os.path.abspath(__file__))
-    rocmlir_gen_path = os.path.join(build_bin_dir, 'rocmlir-gen')
-    rocmlir_driver_path = os.path.join(build_bin_dir, 'rocmlir-driver')
-
-    # Check if build/bin directory exists
-    if not os.path.exists(build_bin_dir):
-        print(f"Error: Build directory not found at {build_bin_dir}")
-        print("Please make sure the rocMLIR build directory exists.")
-        sys.exit(1)
-
-    # Check for rocmlir-gen
-    if not os.path.exists(rocmlir_gen_path):
-        print(f"Error: rocmlir-gen not found at {rocmlir_gen_path}")
-        sys.exit(1)
-
-    # Check for rocmlir-driver
-    if not os.path.exists(rocmlir_driver_path):
-        print(f"Error: rocmlir-driver not found at {rocmlir_driver_path}")
-        sys.exit(1)
-
-    print(f"✓ Found rocmlir-gen: {rocmlir_gen_path}")
-    print(f"✓ Found rocmlir-driver: {rocmlir_driver_path}")
-
-    return [rocmlir_gen_path, rocmlir_driver_path]
-
 def get_perf_config(operation, test_vector, arch, num_cu):
     """
     Get the performance configuration for the given test vector, architecture,
@@ -119,7 +85,7 @@ def get_perf_config(operation, test_vector, arch, num_cu):
 
     return conf_class
 
-def compile_config(config, perf_config, operation, binaries, timestamp):
+def compile_config(config, perf_config, operation, paths, timestamp):
     arch = config[0].split(':')[0]
     num_cu = config[1]
     test_vector = config[2]
@@ -129,11 +95,11 @@ def compile_config(config, perf_config, operation, binaries, timestamp):
     rocmlir_gen_options = conf_class.generateMlirDriverCommandLine("")
 
     # Build the rocmlir-gen command
-    rocmlir_gen_cmd = [binaries[0]] + rocmlir_gen_options.split()
+    rocmlir_gen_cmd = [paths.mlir_paths.rocmlir_gen_path] + rocmlir_gen_options.split()
 
     # Build the rocmlir-driver command
     rocmlir_driver_cmd = [
-        binaries[1],
+        paths.mlir_paths.rocmlir_driver_path,
         "-c",
         f"--arch={arch}",
         "--debug-only=convert-rock-to-gpu,serialize-to-isa",
@@ -161,40 +127,47 @@ def parse_driver_debug_results(tuning_data, dbg_message_file):
                 content = f.read()
                 # Look for blocksize
                 blocksize_match = re.search(r'blockSize:\s*(\d+)', content)
-                if blocksize_match:
-                    tuning_data.blocksize = int(blocksize_match.group(1))
+                if not blocksize_match:
+                    raise ValueError(f"Could not find blockSize in output")
+                tuning_data.blocksize = int(blocksize_match.group(1))
 
                 # Look for gridsize
                 gridsize_match = re.search(r'gridSize:\s*(\d+)', content)
-                if gridsize_match:
-                    tuning_data.gridsize = int(gridsize_match.group(1))
+                if not gridsize_match:
+                    raise ValueError(f"Could not find gridSize in output")
+                tuning_data.gridsize = int(gridsize_match.group(1))
 
                 # Look for LDS_allocated
                 lds_match = re.search(r'ldsUsage:\s*(\d+)', content)
-                if lds_match:
-                    tuning_data.LDS_allocated = int(lds_match.group(1))
+                if not lds_match:
+                    raise ValueError(f"Could not find ldsUsage in output")
+                tuning_data.LDS_allocated = int(lds_match.group(1))
 
                 # Look for SGPR count
                 sgpr_match = re.search(r'\.sgpr_count:\s+(\d+)', content)
-                if sgpr_match:
-                    tuning_data.sgpr_count = int(sgpr_match.group(1))
+                if not sgpr_match:
+                    raise ValueError(f"Could not find sgpr_count in output")
+                tuning_data.sgpr_count = int(sgpr_match.group(1))
                 
                 # Look for VGPR count
                 vgpr_match = re.search(r'\.vgpr_count:\s+(\d+)', content)
-                if vgpr_match:
-                    tuning_data.vgpr_count = int(vgpr_match.group(1))
+                if not vgpr_match:
+                    raise ValueError(f"Could not find vgpr_count in output")
+                tuning_data.vgpr_count = int(vgpr_match.group(1))
                 
                 # Look for SGPR spill count
                 sgpr_spill_match = re.search(r'\.sgpr_spill_count:\s+(\d+)',
                                              content)
-                if sgpr_spill_match:
-                    tuning_data.sgpr_spills = int(sgpr_spill_match.group(1))
+                if not sgpr_spill_match:
+                    raise ValueError(f"Could not find sgpr_spill_count in output")
+                tuning_data.sgpr_spills = int(sgpr_spill_match.group(1))
                 
                 # Look for VGPR spill count
                 vgpr_spill_match = re.search(r'\.vgpr_spill_count:\s+(\d+)',
                                              content)
-                if vgpr_spill_match:
-                    tuning_data.vgpr_spills = int(vgpr_spill_match.group(1))
+                if not vgpr_spill_match:
+                    raise ValueError(f"Could not find vgpr_spill_count in output")
+                tuning_data.vgpr_spills = int(vgpr_spill_match.group(1))
                 
         except Exception as e:
             print(f"Error parsing DBG file {dbg_message_file}: {e}")
@@ -542,8 +515,10 @@ def main():
     
     args = parser.parse_args()
 
-    # Check to make sure that we can find the rocmlir binaries
-    binaries = check_rocmlir_binaries()
+    # Get the paths to the rocmlir binaries
+    build_bin_dir = os.path.dirname(os.path.abspath(__file__))
+    rocmlir_root = os.path.dirname(build_bin_dir)
+    paths = perfRunner.create_paths(None, rocmlir_root)
 
     # Parse the configuration file
     configs = perfRunner.read_tuning_db(args.config_tsv, True)
@@ -565,9 +540,10 @@ def main():
     for i, (config, test_args) in enumerate(zip(configs, op_configs)):
         print_progress(i, total_configs)
         metrics = compile_and_collect_data(config, configs[config], test_args,
-                                           args.op, binaries)
+                                           args.op, paths)
         results.append(metrics)
-
+        break
+    print(results[0].to_dict())
     #Write the results to a final tsv file
     write_results_to_tsv(results, configs)
 
