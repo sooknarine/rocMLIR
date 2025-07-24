@@ -45,6 +45,8 @@ class TuningData:
         self.sgpr_spills = None
         self.LDS_allocated = None
         self.occupancy = None
+        self.WFsPerWG = None
+        self.mfma_wmma_instruction = None
     
     def to_dict(self):
         """Convert to dictionary format for tsv writing."""
@@ -56,7 +58,9 @@ class TuningData:
             'sgpr_count': self.sgpr_count,
             'sgpr_spills': self.sgpr_spills,
             'LDS_allocated': self.LDS_allocated,
-            'occupancy': self.occupancy
+            'occupancy': self.occupancy,
+            'WFsPerWG' : self.WFsPerWG,
+            'mfma_wmma_instruction': self.mfma_wmma_instruction
         }
 
 def create_tuning_data():
@@ -118,6 +122,30 @@ def compile_config(config, perf_config, operation, paths, timestamp):
     
     return f"rocmlir-driver-debug-{arch}-{timestamp}.txt"
 
+def parse_mfma_wmma_instructions(content):
+    """
+    Parse MFMA and WMMA instructions from the debug output.
+    
+    Args:
+        content: String content of the debug output file
+        
+    Returns:
+        list: Unique list of MFMA/WMMA instruction names
+    """
+    # Pattern to match MFMA and WMMA instructions
+    full_pattern = r'\b(v_(?:mfma|wmma)_[a-zA-Z0-9_]+)\b'
+    full_matches = re.findall(full_pattern, content, re.IGNORECASE)
+    
+    # Remove duplicates and sort for consistent output
+    unique_instructions = sorted(list(set(full_matches)))
+    
+    # Assert that there is only one unique instruction
+    size = len(unique_instructions)
+    assert size == 1, \
+           f"Expected exactly one unique MFMA/WMMA instruction, found: {size}"
+    
+    return unique_instructions
+
 def parse_driver_debug_results(tuning_data, dbg_message_file):
     # Parse the rocmlir-driver debug output file for gridsize, blocksize,
     # lds usage, SGPR, and VGPR information
@@ -136,6 +164,12 @@ def parse_driver_debug_results(tuning_data, dbg_message_file):
                 if not gridsize_match:
                     raise ValueError(f"Could not find gridSize in output")
                 tuning_data.gridsize = int(gridsize_match.group(1))
+
+                # Look for waveSize
+                wavesize_match = re.search(r'waveSize:\s*(\d+)', content)
+                if not wavesize_match:
+                    raise ValueError(f"Could not find waveSize in output")
+                tuning_data.WFsPerWG = int(blocksize_match.group(1)) / int(wavesize_match.group(1))
 
                 # Look for LDS_allocated
                 lds_match = re.search(r'ldsUsage:\s*(\d+)', content)
@@ -168,6 +202,9 @@ def parse_driver_debug_results(tuning_data, dbg_message_file):
                 if not vgpr_spill_match:
                     raise ValueError(f"Could not find vgpr_spill_count in output")
                 tuning_data.vgpr_spills = int(vgpr_spill_match.group(1))
+
+                mfma_wmma_instructions = parse_mfma_wmma_instructions(content)
+                tuning_data.mfma_wmma_instruction = mfma_wmma_instructions[0]
                 
         except Exception as e:
             print(f"Error parsing DBG file {dbg_message_file}: {e}")
@@ -437,7 +474,9 @@ def write_results_to_tsv(results, configs):
         'sgpr_count',
         'sgpr_spills',
         'LDS_allocated',
-        'occupancy'
+        'occupancy',
+        'WFsPerWG',
+        'mfma_wmma_instruction'
     ]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -466,7 +505,9 @@ def write_results_to_tsv(results, configs):
                         'sgpr_count': None,
                         'sgpr_spills': None,
                         'LDS_allocated': None,
-                        'occupancy': None
+                        'occupancy': None,
+                        'WFsPerWG': None,
+                        'mfma_wmma_instruction': None
                     }
                 else:
                     # Convert TuningData object to a dictionary
@@ -484,7 +525,9 @@ def write_results_to_tsv(results, configs):
                         'sgpr_count': result_dict.get('sgpr_count', ''),
                         'sgpr_spills': result_dict.get('sgpr_spills', ''),
                         'LDS_allocated': result_dict.get('LDS_allocated', ''),
-                        'occupancy': result_dict.get('occupancy', '')
+                        'occupancy': result_dict.get('occupancy', ''),
+                        'WFsPerWG': result_dict.get('WFsPerWG', ''),
+                        'mfma_wmma_instruction': result_dict.get('mfma_wmma_instruction', '')
                     }
                 
                 writer.writerow(row)
