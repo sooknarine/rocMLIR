@@ -260,6 +260,7 @@ def convertConvTestArgs(test_args, operation):
 def compile_config(config, operation, binaries, timestamp):
     arch = config["# arch"].split(':')[0]
     num_cu = config["numCUs"]
+    success = True
 
     # Parse and add the test vector arguments
     test_vector = config["testVector"]
@@ -324,13 +325,13 @@ def compile_config(config, operation, binaries, timestamp):
         print(f"\nCommand failed: {' '.join(e.cmd)}")
         print(f"Return code: {e.returncode}")
         print(f"Error output: {e.stderr}")
-        return None
+        success = False
     
-    return [
+    return ([
         f"rocmlir-gen-output-{arch}-{timestamp}.mlir",
         f"rocmlir-driver-output-{arch}-{timestamp}.mlir",
         f"rocmlir-driver-debug-{arch}-{timestamp}.txt",
-    ]
+    ], success)
 
 def parse_driver_debug_results(tuning_data, dbg_message_file):
     # Parse the rocmlir-driver debug output file for gridsize, blocksize,
@@ -592,16 +593,21 @@ def compile_and_collect_data(config, operation, binaries):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Compile the config
-    gen_files = compile_config(config, operation, binaries, timestamp)
+    (gen_files, success) = compile_config(config, operation, binaries,
+                                          timestamp)
 
-    # Parse the results from the compiled config
-    results = parse_results(gen_files)
+    results = None
+    if success:
+        # Parse the results from the compiled config
+        results = parse_results(gen_files)
 
-    # Calculate occupancy using the method in testing_metrics.py
-    [M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor] = \
+        # Calculate occupancy using the method in testing_metrics.py
+        [M, N, G, MPerBlock, NPerBlock,
+         MNPerWave, minNumWaves, splitKFactor] = \
                                     gatherOccupancyParameters(config, operation)
-    results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
-                                           MNPerWave, minNumWaves, splitKFactor)
+        results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
+                                               MNPerWave, minNumWaves,
+                                               splitKFactor)
 
     # Clean up temporary files
     for temp_file in gen_files:
@@ -654,23 +660,40 @@ def write_results_to_tsv(results, configs):
             
             # Write each result row
             for (config, result) in zip(configs, results):
-                # Convert TuningData object to a dictionary
-                result_dict = result.to_dict()
+                if result is None:
+                    row = {
+                        'arch': config.get("# arch", ""),
+                        'numCUs': config.get("numCUs", ""),
+                        'testVector': config.get("testVector", ""),
+                        'perfConfig': config.get("perfConfig (exhaustive)", ""),
+                        'blocksize': None,
+                        'gridsize': None,
+                        'vgpr_count': None,
+                        'vgpr_spills': None,
+                        'sgpr_count': None,
+                        'sgpr_spills': None,
+                        'LDS_allocated': None,
+                        'occupancy': None
+                    }
+                else:
+                    # Convert TuningData object to a dictionary
+                    result_dict = result.to_dict()
 
-                row = {
-                    'arch': config.get("# arch", ""),
-                    'numCUs': config.get("numCUs", ""),
-                    'testVector': config.get("testVector", ""),
-                    'perfConfig': config.get("perfConfig (exhaustive)", ""),
-                    'blocksize': result_dict.get('blocksize', ''),
-                    'gridsize': result_dict.get('gridsize', ''),
-                    'vgpr_count': result_dict.get('vgpr_count', ''),
-                    'vgpr_spills': result_dict.get('vgpr_spills', ''),
-                    'sgpr_count': result_dict.get('sgpr_count', ''),
-                    'sgpr_spills': result_dict.get('sgpr_spills', ''),
-                    'LDS_allocated': result_dict.get('LDS_allocated', ''),
-                    'occupancy': result_dict.get('occupancy', '')
-                }
+                    row = {
+                        'arch': config.get("# arch", ""),
+                        'numCUs': config.get("numCUs", ""),
+                        'testVector': config.get("testVector", ""),
+                        'perfConfig': config.get("perfConfig (exhaustive)", ""),
+                        'blocksize': result_dict.get('blocksize', ''),
+                        'gridsize': result_dict.get('gridsize', ''),
+                        'vgpr_count': result_dict.get('vgpr_count', ''),
+                        'vgpr_spills': result_dict.get('vgpr_spills', ''),
+                        'sgpr_count': result_dict.get('sgpr_count', ''),
+                        'sgpr_spills': result_dict.get('sgpr_spills', ''),
+                        'LDS_allocated': result_dict.get('LDS_allocated', ''),
+                        'occupancy': result_dict.get('occupancy', '')
+                    }
+                
                 writer.writerow(row)
         
         print(f"\nResults written to {output_file}")
