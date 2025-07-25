@@ -149,6 +149,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   /* rocmlir-opt --rock-affix-params --rock-conv-to-gemm
    *   --rock-fold-broadcast --rock-affix-params --rock-gemm-to-gridwise
    *   --rock-regularize  --rock-gridwise-gemm-to-blockwise
+   *   -- rock-remove-redundant-casts
    */
   auto &funcPm = pm.nest<func::FuncOp>();
   funcPm.addPass(rock::createRockAffixTuningParametersPass(
@@ -159,6 +160,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm.addPass(rock::createRockRegularizePass());
   funcPm.addPass(rock::createRockShuffleGemmForReductions());
   funcPm.addPass(rock::createRockGridwiseGemmToBlockwisePass());
+  funcPm.addPass(rock::createRockRemoveRedundantCastsPass());
   // We want to delay blockwise lowering in the fusion cases
   // until after linalg align pass because with reduction fusion
   // it may introduce blockwise_reductions.
