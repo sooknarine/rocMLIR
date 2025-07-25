@@ -65,9 +65,6 @@ class TuningData:
             'mfma_wmma_instruction': self.mfma_wmma_instruction
         }
 
-def create_tuning_data():
-    return TuningData()
-
 def get_perf_config(operation, test_vector, arch, num_cu):
     """
     Get the performance configuration for the given test vector, architecture,
@@ -215,17 +212,12 @@ def parse_driver_debug_results(tuning_data, dbg_message_file):
 
 def parse_results(debug_output):
     """
-    This function parses the generated files to gather the desired information.
-    gen_files will contain all of the output files from the different stages
-    of compilation. It will be structured something like the following:
-      - rocmlir-gen output
-      - rocmlir-driver output
-      - rocmlir-driver debug output
-      - rocmlir-translate output
-      - rocmlir-opt output
-      - rocmlir-llc output  
+    This function parses the generated output file to gather the desired
+    information.debug_output will contain all of the output from running
+    rocmlir-driver (debug output and assembly output). It will be structured
+    something like the following:
     """
-    tuning_data = create_tuning_data()
+    tuning_data = TuningData()
     parse_driver_debug_results(tuning_data, debug_output)
 
     return tuning_data
@@ -380,6 +372,12 @@ def extract_MNG_from_config(config, test_args, operation):
             M = int(arg_dict.get('-k', 0))
             N = calculateConvN(arg_dict)
             G = int(arg_dict.get('-g', 0))
+
+            # We currently cannot handle group conv, so if we come across a G
+            # value that is greater than 1, we will need to fail
+            if G > 1:
+                print(f"Warning: Group convolution (G > 1) is not supported")
+                return None, None, None
             
         else:
             print(f"Warning: Unknown operation type '{operation}'")
@@ -437,9 +435,16 @@ def compile_and_collect_data(config, perf_config, test_args, operation,
                                                           perf_config,
                                                           test_args,
                                                           operation)
-    results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
-                                            MNPerWave, minNumWaves,
-                                            splitKFactor)
+    # If any of the parameters are None, we cannot calculate occupancy
+    if None in [M, N, G, MPerBlock, NPerBlock,
+                MNPerWave, minNumWaves, splitKFactor]:
+        print("Warning: Could not gather all parameters for occupancy "
+              "calculation for config. Skipping occupancy calculation.")
+        results.occupancy = None
+    else:
+        results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
+                                               MNPerWave, minNumWaves,
+                                               splitKFactor)
 
     # Clean up temporary debug file
     try:
