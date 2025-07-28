@@ -40,6 +40,7 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
     PrConvElementwiseGemmF16
     PrConvElementwiseGemmBF16
     PrGemmDirectToLDS
+    PrGemmAccelLayout
   )
   set(GEN_MODE "")
 endif()

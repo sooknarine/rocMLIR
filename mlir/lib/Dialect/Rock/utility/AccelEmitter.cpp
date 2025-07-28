@@ -410,7 +410,7 @@ Value MfmaEmitter::wrapLDSBufferForLoad(OpBuilder &b, Location loc,
                                         Value buffer, int64_t blockSize,
                                         int64_t dInCopyPerThread,
                                         StringRef dName, bool rotateDWithK,
-                                        bool directToLds, bool ldsLayoutDxK,
+                                        bool directToLds, bool ldsLayoutDxK, bool accelLayout,
                                         bool doSplitKAcrossThreadsFirst) const {
 
   StringRef thisWaveDim = dName == "m" ? "wave_m" : "wave_n";
@@ -433,7 +433,7 @@ Value MfmaEmitter::wrapLDSBufferForLoad(OpBuilder &b, Location loc,
   // Note that when directToLDS is disabled, we are loading vector<kpackxdtype>
   // from LDS, so we load kpackPerThread. When directToLDS is enabled, we
   // load vector<1xdtype>, so each thread will load kpackPerThread * kPack.
-  if (directToLds) {
+  if (directToLds && !accelLayout) {
     kIter *= kPack;
     kPerBlock *= kPack;
     assert(!rotateDWithK && "rotateDWithK must not be enabled for directToLds");
@@ -810,7 +810,7 @@ Value WmmaEmitter::wrapLDSBufferForLoad(OpBuilder &b, Location loc,
                                         Value buffer, int64_t blockSize,
                                         int64_t dInCopyPerThread,
                                         StringRef dName, bool rotateDWithK,
-                                        bool directToLds, bool ldsLayoutDxK,
+                                        bool directToLds, bool ldsLayoutDxK, bool accelLayout,
                                         bool doSplitKAcrossThreadsFirst) const {
 
   // Extract relevant tuning parameters
