@@ -64,6 +64,44 @@ GFX_CHIP_RE = re.compile(r"gfx[0-9a-z]+")
 INFO_ARCH_NAME = re.compile(r"Name:\s*(.*)")
 INFO_ARCH_CU = re.compile(r"Compute Unit:\s*(.*)")
 
+# This map stores the header to flag mapping and a boolean value denoting
+# if the flag require a value
+DEBUG_HEADER_TO_FLAG = {
+    'DataType': '-t',
+    'OutDataType': '-out_datatype',
+    'TransA': '-transA',
+    'TransB': '-transB',
+    'TransQ': '-transQ',
+    'TransK': '-transK',
+    'TransV': '-transV',
+    'TransO': '-transO',
+    'Causal': '-causal',
+    'WithAttnScale': '-with-attn-scale',
+    'SeqLenQ': '-seq_len_q',
+    'SeqLenK': '-seq_len_k',
+    'NumHeadsQ': '-num_heads_q',
+    'NumHeadsKV': '-num_heads_kv',
+    'HeadDimQK': '-head_dim_qk',
+    'HeadDimV': '-head_dim_v',
+    'FilterLayout': '-f',
+    'InputLayout': '-I',
+    'OutputLayout': '-O',
+    'C': '-c',
+    'G': '-g',
+    'H': '-h',
+    'K': '-k',
+    'M': '-m',
+    'N': '-n',
+    'W': '-w',
+    'X': '-x',
+    'Y': '-y',
+    'DilationH': '-dilation_h',
+    'StrideH': '-conv_stride_h',
+    'StrideW': '-conv_stride_w',
+    'PaddingH': '-padding_h',
+    'PaddingW': '-padding_w',
+}
+
 @dataclass
 class MLIRPaths:
     rocmlir_gen_path : str
@@ -235,9 +273,50 @@ def getBankConflict(fileName):
         result_average = sum(result) / len(result)
         return result_average
 
-# Tuning databases
+def parse_debug_db_row(row) -> str:
+    """
+    Parses a row from the debug database and returns a formatted string.
+    """
+    args = []
+    for key, value in row.items():
+        if key in DEBUG_HEADER_TO_FLAG:
+            args.extend([DEBUG_HEADER_TO_FLAG[key], str(value).lower()])
+    
+    # Filter out any empty strings and join with spaces
+    result_str = " ".join(filter(None, args))
+    return result_str
+
+
+# Tuning debug databases
 MaybeTuningDb = Optional[Dict[Tuple[str, str], str]]
 MaybeTuningDbWithCU = Optional[Dict[Tuple[str, str, str], str]]
+def read_debug_db(path: Optional[str]) -> MaybeTuningDbWithCU:
+    try:
+        df = pd.read_csv(path, sep='\t')
+        ret = {}
+        for _, row in df.iterrows():
+            # If this was not a valid config, i.e., it did not generate a
+            # TFLOPs value, then we can skip it
+            if not(pd.isna(row.get('TFLOPs')) or row.get('TFLOPs') == ''):
+                continue
+
+            # Extract the required fields
+            arch = row['Chip']
+            num_cu = str(row['numCU'])
+            perf_config = row['PerfConfig']
+            configs = parse_debug_db_row(row)
+            ret[(arch, num_cu, configs)] = perf_config
+
+        return ret
+    except FileNotFoundError:
+        if path:
+            print("Warning: Failed to find tuning debug database:", path)
+        return None
+    except Exception as e:
+        print(f"Error reading tuning debug database: {e}")
+        return None
+
+# Tuning databases
 def read_tuning_db(path: Optional[str], include_num_cu: bool = False) -> Union[MaybeTuningDb, MaybeTuningDbWithCU]:
     try:
         ret = {}

@@ -375,19 +375,20 @@ def extract_MNG_from_config(config, test_args, operation):
     
     return M, N, G
 
-def gatherOccupancyParameters(config, perf_config, test_args, operation):
+def gatherOccupancyParameters(config, perf_config, operation):
     '''
     This function gathers all of the parameters that are needed to calculate
     the theoretical occupancy
     '''
     num_cu = config[1]
+    test_vector = config[2]
     parsed_params = parse_perf_config(perf_config, num_cu)
     
     if parsed_params is None:
         return [None] * 8  # Return None values if parsing fails
     
     # Extract the required parameters for occupancy calculation
-    [M, N, G] = extract_MNG_from_config(config, test_args, operation)
+    [M, N, G] = extract_MNG_from_config(config, test_vector, operation)
     
     MPerBlock = int(parsed_params['MPerBlock'])
     NPerBlock = int(parsed_params['NPerBlock'])
@@ -397,8 +398,7 @@ def gatherOccupancyParameters(config, perf_config, test_args, operation):
 
     return [M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor]
 
-def compile_and_collect_data(config, perf_config, test_args, operation,
-                             binaries):
+def compile_and_collect_data(config, perf_config, operation, binaries):
     """
     Compile and collect the resulting data points that we are interested in
     """
@@ -419,7 +419,6 @@ def compile_and_collect_data(config, perf_config, test_args, operation,
         MNPerWave, minNumWaves, splitKFactor] = \
                                 gatherOccupancyParameters(config,
                                                           perf_config,
-                                                          test_args,
                                                           operation)
     # If any of the parameters are None, we cannot calculate occupancy
     if None in [M, N, G, MPerBlock, NPerBlock,
@@ -567,29 +566,22 @@ def main():
         sys.exit(1)
 
     # Parse the configuration file
-    configs = perfRunner.read_tuning_db(args.config_tsv, True)
-    op_configs = None
-    if (args.op == 'conv'):
-        op_configs = perfRunner.getConvConfigurations(args.config_tsv)
-    elif (args.op == 'gemm'):
-        op_configs = perfRunner.getGemmConfigurations(args.config_tsv)
-    elif (args.op == 'attention'):
-        op_configs = perfRunner.getAttentionConfigurations(args.config_tsv)
+    configs = None
+    if args.config_tsv.endswith('.debug'):
+        configs = perfRunner.read_debug_db(args.config_tsv)
     else:
-        print(f"Error: Unknown operation '{args.op}'")
-        sys.exit(1)
+        configs = perfRunner.read_tuning_db(args.config_tsv, True)
+
     print(f"Found {len(configs)} configurations to process")
     
     # Process each configuration
     results = []
     total_configs = len(configs)
-    for i, (config, test_args) in enumerate(zip(configs, op_configs)):
+    for i, config in enumerate(configs):
         print_progress(i, total_configs)
-        metrics = compile_and_collect_data(config, configs[config], test_args,
+        metrics = compile_and_collect_data(config, configs[config],
                                            args.op, paths)
         results.append(metrics)
-        # TODO: Temporary workaround to speed up testing
-        break
 
     # Write the results to a final tsv file
     write_results_to_tsv(results, configs)
