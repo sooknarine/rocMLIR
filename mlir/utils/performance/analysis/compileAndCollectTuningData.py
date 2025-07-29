@@ -7,7 +7,7 @@ points for each config:
 - sgpr
 - LDS allocated
 - Occupancy
-- WFsPerWG
+- wf_per_wg
 - mfma_wmma_instruction
 
 The given config is expected to be a tsv with the following format:
@@ -20,15 +20,21 @@ Usage:
 import argparse
 import csv
 import os
-import perfRunner
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 
 from datetime import datetime
 from testing_metrics import calculateOccupancy
+
+# perfRunner may or may not be in the same directory as this script depending
+# on if the user has run `ninja ci-performance-scripts`
+try:
+    import perfRunner
+except ModuleNotFoundError:
+    parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    sys.path.append(parent_dir)
+    import perfRunner
 
 
 # TODO use AmdArchDb.py (when it's implemented). 4 works for all current
@@ -45,9 +51,9 @@ class TuningData:
         self.vgpr_spills = None
         self.sgpr_count = None
         self.sgpr_spills = None
-        self.LDS_allocated = None
+        self.lds_allocated = None
         self.occupancy = None
-        self.WFsPerWG = None
+        self.wf_per_wg = None
         self.mfma_wmma_instruction = None
     
     def to_dict(self):
@@ -59,9 +65,9 @@ class TuningData:
             'vgpr_spills': self.vgpr_spills,
             'sgpr_count': self.sgpr_count,
             'sgpr_spills': self.sgpr_spills,
-            'LDS_allocated': self.LDS_allocated,
+            'lds_allocated': self.lds_allocated,
             'occupancy': self.occupancy,
-            'WFsPerWG' : self.WFsPerWG,
+            'wf_per_wg' : self.wf_per_wg,
             'mfma_wmma_instruction': self.mfma_wmma_instruction
         }
 
@@ -104,22 +110,13 @@ def compile_config(config, perf_config, operation, paths, timestamp):
     rocmlir_driver_cmd = [
         paths.mlir_paths.rocmlir_driver_path,
         "-c",
-        f"--arch={arch}",
         "--debug-only=convert-rock-to-gpu,serialize-to-isa",
     ]
 
     commands = [rocmlir_gen_cmd, rocmlir_driver_cmd]
     out, err = perfRunner.runPipeline(commands)
-
-    # Write debug output to file
-    debug_file = f"rocmlir-driver-debug-{arch}-{timestamp}.txt"
-    with open(debug_file, 'w') as f:
-        if isinstance(err, bytes):
-            f.write(err.decode('utf-8'))
-        else:
-            f.write(err if err else "")
     
-    return f"rocmlir-driver-debug-{arch}-{timestamp}.txt"
+    return err
 
 def parse_mfma_wmma_instructions(content):
     """
@@ -145,71 +142,6 @@ def parse_mfma_wmma_instructions(content):
     
     return unique_instructions
 
-def parse_driver_debug_results(tuning_data, dbg_message_file):
-    # Parse the rocmlir-driver debug output file for gridsize, blocksize,
-    # lds usage, SGPR, and VGPR information
-    if os.path.exists(dbg_message_file):
-        try:
-            with open(dbg_message_file, 'r') as f:
-                content = f.read()
-                # Look for blocksize
-                blocksize_match = re.search(r'blockSize:\s*(\d+)', content)
-                if not blocksize_match:
-                    raise ValueError(f"Could not find blockSize in output")
-                tuning_data.blocksize = int(blocksize_match.group(1))
-
-                # Look for gridsize
-                gridsize_match = re.search(r'gridSize:\s*(\d+)', content)
-                if not gridsize_match:
-                    raise ValueError(f"Could not find gridSize in output")
-                tuning_data.gridsize = int(gridsize_match.group(1))
-
-                # Look for waveSize
-                wavesize_match = re.search(r'waveSize:\s*(\d+)', content)
-                if not wavesize_match:
-                    raise ValueError(f"Could not find waveSize in output")
-                tuning_data.WFsPerWG = int(blocksize_match.group(1)) / int(wavesize_match.group(1))
-
-                # Look for LDS_allocated
-                lds_match = re.search(r'ldsUsage:\s*(\d+)', content)
-                if not lds_match:
-                    raise ValueError(f"Could not find ldsUsage in output")
-                tuning_data.LDS_allocated = int(lds_match.group(1))
-
-                # Look for SGPR count
-                sgpr_match = re.search(r'\.sgpr_count:\s+(\d+)', content)
-                if not sgpr_match:
-                    raise ValueError(f"Could not find sgpr_count in output")
-                tuning_data.sgpr_count = int(sgpr_match.group(1))
-                
-                # Look for VGPR count
-                vgpr_match = re.search(r'\.vgpr_count:\s+(\d+)', content)
-                if not vgpr_match:
-                    raise ValueError(f"Could not find vgpr_count in output")
-                tuning_data.vgpr_count = int(vgpr_match.group(1))
-                
-                # Look for SGPR spill count
-                sgpr_spill_match = re.search(r'\.sgpr_spill_count:\s+(\d+)',
-                                             content)
-                if not sgpr_spill_match:
-                    raise ValueError(f"Could not find sgpr_spill_count in output")
-                tuning_data.sgpr_spills = int(sgpr_spill_match.group(1))
-                
-                # Look for VGPR spill count
-                vgpr_spill_match = re.search(r'\.vgpr_spill_count:\s+(\d+)',
-                                             content)
-                if not vgpr_spill_match:
-                    raise ValueError(f"Could not find vgpr_spill_count in output")
-                tuning_data.vgpr_spills = int(vgpr_spill_match.group(1))
-
-                mfma_wmma_instructions = parse_mfma_wmma_instructions(content)
-                tuning_data.mfma_wmma_instruction = mfma_wmma_instructions[0]
-                
-        except Exception as e:
-            print(f"Error parsing DBG file {dbg_message_file}: {e}")
-    else:
-        print(f"Warning: DBG file {dbg_message_file} not found")
-
 def parse_results(debug_output):
     """
     This function parses the generated output file to gather the desired
@@ -218,7 +150,59 @@ def parse_results(debug_output):
     something like the following:
     """
     tuning_data = TuningData()
-    parse_driver_debug_results(tuning_data, debug_output)
+
+    # Look for blocksize
+    blocksize_match = re.search(r'blockSize:\s*(\d+)', debug_output)
+    if not blocksize_match:
+        raise ValueError(f"Could not find blockSize in output")
+    tuning_data.blocksize = int(blocksize_match.group(1))
+
+    # Look for gridsize
+    gridsize_match = re.search(r'gridSize:\s*(\d+)', debug_output)
+    if not gridsize_match:
+        raise ValueError(f"Could not find gridSize in output")
+    tuning_data.gridsize = int(gridsize_match.group(1))
+
+    # Look for waveSize
+    wavesize_match = re.search(r'waveSize:\s*(\d+)', debug_output)
+    if not wavesize_match:
+        raise ValueError(f"Could not find waveSize in output")
+    tuning_data.wf_per_wg = int(blocksize_match.group(1)) / int(wavesize_match.group(1))
+
+    # Look for lds_allocated
+    lds_match = re.search(r'ldsUsage:\s*(\d+)', debug_output)
+    if not lds_match:
+        raise ValueError(f"Could not find ldsUsage in output")
+    tuning_data.lds_allocated = int(lds_match.group(1))
+
+    # Look for SGPR count
+    sgpr_match = re.search(r'\.sgpr_count:\s+(\d+)', debug_output)
+    if not sgpr_match:
+        raise ValueError(f"Could not find sgpr_count in output")
+    tuning_data.sgpr_count = int(sgpr_match.group(1))
+    
+    # Look for VGPR count
+    vgpr_match = re.search(r'\.vgpr_count:\s+(\d+)', debug_output)
+    if not vgpr_match:
+        raise ValueError(f"Could not find vgpr_count in output")
+    tuning_data.vgpr_count = int(vgpr_match.group(1))
+    
+    # Look for SGPR spill count
+    sgpr_spill_match = re.search(r'\.sgpr_spill_count:\s+(\d+)',
+                                    debug_output)
+    if not sgpr_spill_match:
+        raise ValueError(f"Could not find sgpr_spill_count in output")
+    tuning_data.sgpr_spills = int(sgpr_spill_match.group(1))
+    
+    # Look for VGPR spill count
+    vgpr_spill_match = re.search(r'\.vgpr_spill_count:\s+(\d+)',
+                                    debug_output)
+    if not vgpr_spill_match:
+        raise ValueError(f"Could not find vgpr_spill_count in output")
+    tuning_data.vgpr_spills = int(vgpr_spill_match.group(1))
+
+    mfma_wmma_instructions = parse_mfma_wmma_instructions(debug_output)
+    tuning_data.mfma_wmma_instruction = mfma_wmma_instructions[0]
 
     return tuning_data
     
@@ -376,8 +360,8 @@ def extract_MNG_from_config(config, test_args, operation):
             # We currently cannot handle group conv, so if we come across a G
             # value that is greater than 1, we will need to fail
             if G > 1:
-                print(f"Warning: Group convolution (G > 1) is not supported")
-                return None, None, None
+                print(f"Error: Group convolution (G > 1) is not supported")
+                sys.exit(1)
             
         else:
             print(f"Warning: Unknown operation type '{operation}'")
@@ -424,6 +408,8 @@ def compile_and_collect_data(config, perf_config, test_args, operation,
     # Compile the config
     debug_output = compile_config(config, perf_config, operation, binaries,
                                   timestamp)
+    if isinstance(debug_output, bytes):
+        debug_output = debug_output.decode('utf-8')
 
     # Parse the results from the compiled config
     results = parse_results(debug_output)
@@ -466,7 +452,7 @@ def write_results_to_tsv(results, configs):
     """
     if not results:
         print("No results to write")
-        return
+        sys.exit(1)
     
     # Define the fieldnames for the tsv
     fieldnames = [
@@ -480,9 +466,9 @@ def write_results_to_tsv(results, configs):
         'vgpr_spills',
         'sgpr_count',
         'sgpr_spills',
-        'LDS_allocated',
+        'lds_allocated',
         'occupancy',
-        'WFsPerWG',
+        'wf_per_wg',
         'mfma_wmma_instruction'
     ]
 
@@ -511,9 +497,9 @@ def write_results_to_tsv(results, configs):
                         'vgpr_spills': None,
                         'sgpr_count': None,
                         'sgpr_spills': None,
-                        'LDS_allocated': None,
+                        'lds_allocated': None,
                         'occupancy': None,
-                        'WFsPerWG': None,
+                        'wf_per_wg': None,
                         'mfma_wmma_instruction': None
                     }
                 else:
@@ -531,9 +517,9 @@ def write_results_to_tsv(results, configs):
                         'vgpr_spills': result_dict.get('vgpr_spills', ''),
                         'sgpr_count': result_dict.get('sgpr_count', ''),
                         'sgpr_spills': result_dict.get('sgpr_spills', ''),
-                        'LDS_allocated': result_dict.get('LDS_allocated', ''),
+                        'lds_allocated': result_dict.get('lds_allocated', ''),
                         'occupancy': result_dict.get('occupancy', ''),
-                        'WFsPerWG': result_dict.get('WFsPerWG', ''),
+                        'wf_per_wg': result_dict.get('wf_per_wg', ''),
                         'mfma_wmma_instruction': result_dict.get('mfma_wmma_instruction', '')
                     }
                 
@@ -543,6 +529,7 @@ def write_results_to_tsv(results, configs):
         
     except Exception as e:
         print(f"\nError writing results to tsv: {e}")
+        sys.exit(1)
 
 def print_progress(current, total):
     """Print a progress bar to stdout."""
@@ -574,6 +561,11 @@ def main():
     rocmlir_root = os.path.dirname(build_bin_dir)
     paths = perfRunner.create_paths(None, rocmlir_root)
 
+    # Check if the input config tsv file exists
+    if not os.path.exists(args.config_tsv):
+        print(f"Error: The specified config tsv file cannot be found.")
+        sys.exit(1)
+
     # Parse the configuration file
     configs = perfRunner.read_tuning_db(args.config_tsv, True)
     op_configs = None
@@ -596,9 +588,11 @@ def main():
         metrics = compile_and_collect_data(config, configs[config], test_args,
                                            args.op, paths)
         results.append(metrics)
+        # TODO: Temporary workaround to speed up testing
+        break
 
-    #Write the results to a final tsv file
+    # Write the results to a final tsv file
     write_results_to_tsv(results, configs)
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
