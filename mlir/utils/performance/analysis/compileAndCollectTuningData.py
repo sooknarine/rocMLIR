@@ -25,7 +25,7 @@ import subprocess
 import sys
 
 from datetime import datetime
-from testing_metrics import calculateOccupancy
+from testing_metrics import calculateOccupancy, calculateAttentionOccupancy
 
 # perfRunner may or may not be in the same directory as this script depending
 # on if the user has run `ninja ci-performance-scripts`
@@ -426,7 +426,10 @@ def compile_and_collect_data(config, perf_config, operation, binaries):
         print("Warning: Could not gather all parameters for occupancy "
               "calculation for config. Skipping occupancy calculation.")
         results.occupancy = None
-    else:
+    elif operation.lower() == 'attention':
+        results.occupancy = calculateAttentionOccupancy(N, G, NPerBlock,
+                                                        MNPerWave, minNumWaves)
+    else :
         results.occupancy = calculateOccupancy(M, N, G, MPerBlock, NPerBlock,
                                                MNPerWave, minNumWaves,
                                                splitKFactor)

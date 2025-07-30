@@ -159,6 +159,12 @@ def calculateOccupancy(M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, sp
 
     return Waves / minNumWaves
 
+def calculateAttentionOccupancy(N, G, NPerBlock, MNPerWave, minNumWaves):
+    WorkGroups = (N / NPerBlock) * G
+    WavesPerBlock = NPerBlock // MNPerWave
+    Waves = WorkGroups * WavesPerBlock
+    return Waves / minNumWaves
+
 
 def calculateWorkImbalance(M, N, G, MPerBlock, NPerBlock, MNPerWave, minNumWaves, splitKFactor=1):
     MTiles = math.ceil(M/MPerBlock)
