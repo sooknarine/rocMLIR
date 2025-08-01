@@ -2241,31 +2241,6 @@ createCPUConvFunc(ModuleOp module,
   return func;
 }
 
-static Value accelLayoutToStandard(
-    OpBuilder &b, SmallVector<StringRef> nameList, StringRef dimension, Value accelLayoutTensor) {
-  assert(dimension == "m" || dimension == "n");
-  Location loc = accelLayoutTensor.getLoc();
-  auto logicalShapedTy = cast<ShapedType>(accelLayoutTensor.getType());
-  rock::BottomUpTMBuilder transposer(b, nameList, logicalShapedTy.getShape(),
-                              loc);
-  // B x d x k x kpackperblock x dperblock x kpack -> B x d x dperblock x k x kpackperblock x kpack
-  transposer.passThrough(ArrayRef<uint32_t>{0, 1, 4, 2, 3, 5}, ArrayRef<uint32_t>{0, 1, 2, 3, 4, 5});
-  rock::TransformMapAttr transposerAttr = transposer.get();
-
-  // B x d x dperblock x k x kpackperblock x kpack -> B x D x K (or B x K x D if transposed or B tensor)
-  auto merger = rock::BottomUpTMBuilder::above(transposer, transposerAttr);
-  // passThrough the batch dimension
-  merger.passThrough(nameList[0]);
-  uint32_t dOutDim = 1;
-  uint32_t kOutDim = 2;
-  merger.merge(dimension, dOutDim, {nameList[1], nameList[4]});
-  merger.merge("k", kOutDim, {nameList[2], nameList[3], nameList[5]});
-  rock::TransformMapAttr mergerAttr = merger.get();
-
-  SmallVector<Attribute> transformAttrs{mergerAttr, transposerAttr};
-  return rock::transform(b, accelLayoutTensor, b.getArrayAttr(transformAttrs));
-}
-
 static void getGemmTypes(ArrayRef<Type> elemTypes,
                          const rock::GemmFeatures& features, SmallVectorImpl<Type> &result, bool isCpuVerifier) {
   Type cElemType = elemTypes[2];
@@ -2275,7 +2250,7 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
   SmallVector<int64_t> aDims, bDims, cDims;
 
   int64_t mPerBlock, nPerBlock, kpackPerBlock, kPack, kPerBlock, kBlocks;
-  if(accelLayoutA || accelLayoutB) {
+  if(isCpuVerifier && (accelLayoutA || accelLayoutB)) {
     assert(!perfConfig.empty() &&
            "perfConfig must be set when accelLayoutA or accelLayoutB is true");
     auto populateParamsAccelPtr = rock::PopulateParamsAccel::select(features);
@@ -2297,23 +2272,33 @@ static void getGemmTypes(ArrayRef<Type> elemTypes,
   }
 
   if(accelLayoutA) {
-    assert(gemmM % mPerBlock == 0 &&
-           "gemmM must be divisible by mPerBlock");
-    int64_t mBlocks = gemmM / mPerBlock;
-    assert(!transposeA && "accel layout A must not be transposed");
+    assert(!transposeA);
+    if(isCpuVerifier) {
+      assert(gemmM % mPerBlock == 0 &&
+            "gemmM must be divisible by mPerBlock");
+      int64_t mBlocks = gemmM / mPerBlock;
+      assert(!transposeA && "accel layout A must not be transposed");
 
-    aDims = {groupSize, mBlocks, kBlocks, kpackPerBlock, mPerBlock, kPack};
+      aDims = {groupSize, mBlocks, kBlocks, kpackPerBlock, mPerBlock, kPack};
+    } else {
+      aDims = {groupSize*gemmK*gemmM};
+    }
   } else {
     aDims = {groupSize, transposeA ? gemmK : gemmM,
             transposeA ? gemmM : gemmK};
   }
   if(accelLayoutB) {
-    assert(gemmN % nPerBlock == 0 &&
-           "gemmN must be divisible by nPerBlock");
-    int64_t nBlocks = gemmN / nPerBlock;
-    assert(transposeB && "accel layout B must be transposed");
+    assert(transposeB);
+    if(isCpuVerifier) {
+      assert(gemmN % nPerBlock == 0 &&
+            "gemmN must be divisible by nPerBlock");
+      int64_t nBlocks = gemmN / nPerBlock;
+      assert(transposeB && "accel layout B must be transposed");
 
-    bDims = {groupSize, nBlocks, kBlocks, kpackPerBlock, nPerBlock, kPack};
+      bDims = {groupSize, nBlocks, kBlocks, kpackPerBlock, nPerBlock, kPack};
+    } else {
+      bDims = {groupSize*gemmK*gemmN};
+    }
   } else {
     bDims = {groupSize, transposeB ? gemmN : gemmK,
             transposeB ? gemmK : gemmN};
@@ -2360,20 +2345,10 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 
   constexpr StringLiteral gName = "g", mName = "m", kName = "k", nName = "n";
   SmallVector<SmallVector<StringRef>> allArgNames;
-  if(accelLayoutA) {
-    allArgNames.emplace_back(SmallVector<StringRef>{
-        gName, mName, kName, "kPackPerBlock", "mPerBlock", "kPack"});
-  } else {
-    allArgNames.emplace_back(SmallVector<StringRef>{
-        gName, transposeA ? kName : mName, transposeA ? mName : kName});
-  }
-  if(accelLayoutB) {
-    allArgNames.emplace_back(SmallVector<StringRef>{
-        gName, nName, kName, "kPackPerBlock", "nPerBlock", "kPack"});
-  } else {
-    allArgNames.emplace_back(SmallVector<StringRef>{
-        gName, transposeB ? nName : kName, transposeB ? kName : nName});
-  }
+  allArgNames.emplace_back(SmallVector<StringRef>{
+      gName, transposeA ? kName : mName, transposeA ? mName : kName});
+  allArgNames.emplace_back(SmallVector<StringRef>{
+      gName, transposeB ? nName : kName, transposeB ? kName : nName});
   allArgNames.emplace_back(SmallVector<StringRef>{
       gName, transposeC ? nName : mName, transposeC ? mName : nName});
 
@@ -2384,10 +2359,16 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
                                     expandedArgs);
 
   Value aVal = expandedArgs[0], bVal = expandedArgs[1], cVal = expandedArgs[2];
-  if(accelLayoutA)
-    aVal = accelLayoutToStandard(b, allArgNames[0], mName, aVal);
-  if(accelLayoutB)
-    bVal = accelLayoutToStandard(b, allArgNames[1], nName, bVal);
+  if(accelLayoutA) {
+    MemRefType aType = MemRefType::get({groupSize, gemmM, gemmK}, params.types[0]);
+    aVal = b.create<rock::AccelLayoutTransformOp>(
+        loc, aType, func.getArgument(0), /*isA=*/b.getUnitAttr(), /*params=*/nullptr);
+  }
+  if(accelLayoutB) {
+    MemRefType bType = MemRefType::get({groupSize, gemmN, gemmK}, params.types[1]);
+    bVal = b.create<rock::AccelLayoutTransformOp>(
+        loc, bType, func.getArgument(1), /*isA=*/nullptr, /*params=*/nullptr);
+  }
 
   IntegerAttr numCUAttr =
       (num_cu.getNumOccurrences() > 0 ? b.getI32IntegerAttr(num_cu) : nullptr);

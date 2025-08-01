@@ -448,7 +448,7 @@ def Rock_TransformOp :
     Results<(outs AnyShaped:$output)> {
   let summary = "Tensor transformation";
   let description = [{
-    Create a viee `output` of the tensor `input` with the same element type
+    Create a view `output` of the tensor `input` with the same element type
     such that, when the coordinates used to index into `output` are passed through
     the coordinate transformations `transforms` from left to right,
     they become coordinates into the `input` tensor.
@@ -1555,5 +1555,23 @@ def Rock_StageOp :
     let regions = (region AnyRegion:$region);
     let hasCustomAssemblyFormat = 1;
   }
+  
+def Rock_AccelLayoutTransformOp :
+    Rock_Op<"accel_layout_transform", [Pure, ViewLikeOpInterface]>,
+    Arguments<(ins AnyShaped:$input, UnitAttr:$isA, OptionalAttr<RockTuningParamAttrInterface>:$params)>,
+    Results<(outs AnyShaped:$output)> {
+  let summary = "Tensor transformation";
+  let description = [{
+    This operation represents a transformation of a tensor to an accelerator-specific layout.
+    The layout is [G x m x k x kpackperblock x mperblock x kpack].
+  }];
+  let assemblyFormat = [{
+    $input attr-dict `:` type($input) `to` type($output)
+  }];
+
+  let extraClassDeclaration = [{
+    Value getViewSource() { return getInput(); }
+  }];
+}
 
 #endif // ROCK_OPS
